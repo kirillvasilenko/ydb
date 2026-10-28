@@ -32,7 +32,7 @@ void TColumnShard::Handle(TEvDataShard::TEvKqpScan::TPtr& ev, const TActorContex
         {"readable", maxReadVersion},
         {"tabletID", TabletID()});
 
-    if (!ScanGate.PassSnapshot(ev, readVersion, maxReadVersion)) {
+    if (!ScanGate.PassReadableSnapshot(ev, readVersion, maxReadVersion)) {
         WaitPlanStep(readVersion.GetPlanStep());
         return;
     }
@@ -57,7 +57,7 @@ void TColumnShard::Handle(TEvDataShard::TEvKqpScan::TPtr& ev, const TActorContex
     }
 
     NOlap::NReader::TScanTarget target{ readSnapshot, accessor.DetachResult(), ranges.DetachResult() };
-    if (!ScanGate.PassLoadedPortions(ev, GetIndexOptional(), target)) {
+    if (!ScanGate.PassLoadedPortions(ev, target)) {
         return;
     }
 
@@ -75,7 +75,7 @@ void TColumnShard::Handle(TEvColumnShard::TEvInternalScan::TPtr& ev, const TActo
         "internal_request", request.GetPathId().GetInternalPathId(), request.GetPathId().GetSchemeShardLocalPathId(), readSnapshot);
     NOlap::NReader::TScanTarget target{ readSnapshot, accessor.DetachResult(),
         request.RangesFilter ? request.RangesFilter : std::make_shared<NOlap::TPKRangesFilter>(NOlap::TPKRangesFilter::BuildEmpty()) };
-    if (!ScanGate.PassLoadedPortions(ev, GetIndexOptional(), target)) {
+    if (!ScanGate.PassLoadedPortions(ev, target)) {
         return;
     }
     Execute(new NOlap::NReader::TTxInternalScan(this, ev, std::move(target)), ctx);

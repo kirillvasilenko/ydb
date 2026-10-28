@@ -100,6 +100,7 @@ struct TEvPrivate {
         EvFindEmptyHistoryIntervalsPortionsReady,
         EvPrefetchPortionsMetadata,
         EvSetLoadedKeyRanges,
+        EvPassWriteGate,
         EvEnd
     };
 
