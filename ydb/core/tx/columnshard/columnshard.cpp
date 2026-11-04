@@ -91,7 +91,6 @@ void TColumnShard::TrySwitchToWork(const TActorContext& ctx) {
             {"event", "initialize_shard"},
             {"step", "SwitchToWork"});
         Become(&TThis::StateWork);
-        StartFindEmptyHistoryIntervals(ctx);
         SignalTabletActive(ctx);
         YDB_LOG_INFO("",
             {"event", "initialize_shard"},
@@ -100,8 +99,6 @@ void TColumnShard::TrySwitchToWork(const TActorContext& ctx) {
         EnqueueProgressTx(ctx);
         OnTieringModified();
     }
-    // the request for every portion takes long to build, so it is not part of the start
-    ctx.Send(SelfId(), new TEvPrivate::TEvPrefetchPortionsMetadata());
     Counters.GetCSCounters().OnIndexMetadataLimit(NOlap::IColumnEngine::GetMetadataLimit());
     EnqueueBackgroundActivities();
     BackgroundSessionsManager->Start();
@@ -121,6 +118,13 @@ void TColumnShard::TrySwitchToWork(const TActorContext& ctx) {
     }
     StartupTimeline.OnSwitchedToWork(portionsCount);
     NYDBTest::TControllers::GetColumnShardController()->OnTabletInitCompleted(*this);
+    if (DeferredPortionLoader.IsEnabled()) {
+        StartDeferredPortionLoading(ctx);
+    } else {
+        StartFindEmptyHistoryIntervals(ctx);
+        // the request for every portion takes long to build, so it is not part of the start
+        ctx.Send(SelfId(), new TEvPrivate::TEvPrefetchPortionsMetadata());
+    }
 }
 
 void TColumnShard::OnActivateExecutor(const TActorContext& ctx) {

@@ -23,6 +23,7 @@
 #include "data_sharing/source/events/control.h"
 #include "data_sharing/source/events/transfer.h"
 #include "engines/reader/transaction/scan_gate.h"
+#include "loading/deferred_portion_loader.h"
 #include "normalizer/abstract/abstract.h"
 #include "operations/events.h"
 #include "operations/manager.h"
@@ -198,6 +199,7 @@ class TColumnShard: public TActor<TColumnShard>, public NTabletFlatExecutor::TTa
     friend class TEvWriteCommitSecondaryTransactionOperator;
     friend class TEvWriteCommitPrimaryTransactionOperator;
     friend class TTxInit;
+    friend class TTxLoadPortionsBatch;
     friend class TTxCleanupSchemasWithnoData;
     friend class TTxInitSchema;
     friend class TTxUpdateSchema;
@@ -384,6 +386,11 @@ class TColumnShard: public TActor<TColumnShard>, public NTabletFlatExecutor::TTa
     void BecomeBroken(const TActorContext& ctx);
     void TrySwitchToWork(const TActorContext& ctx);
 
+    void StartDeferredPortionLoading(const TActorContext& ctx);
+    void ContinueDeferredPortionLoading(const TActorContext& ctx);
+    void OnPortionsBatchLoaded(TDeferredPortionLoader::TBatch&& batch, const TActorContext& ctx);
+    void OnAllPortionsLoaded(const TActorContext& ctx);
+
     bool IsAnyChannelYellowStop() const {
         return Executor()->GetStats().IsAnyChannelYellowStop;
     }
@@ -536,6 +543,7 @@ private:
     THashMap<ui64, TInstant> ScanTxInFlight;
     NOlap::NReader::TScanGate ScanGate;
     std::optional<TWriteGate> WriteGate;
+    TDeferredPortionLoader DeferredPortionLoader;
     TBackgroundController BackgroundController;
     TSettings Settings;
     TLimits Limits;
