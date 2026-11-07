@@ -2020,7 +2020,6 @@ STFUNC(TColumnShard::StateWork) {
         HFunc(NActors::TEvents::TEvWakeup, Handle);
         HFunc(TEvPrivate::TEvPingSnapshotsUsage, Handle);
         hFunc(TEvPrivate::TEvPrefetchPortionsMetadata, Handle);
-        hFunc(TEvPrivate::TEvSetLoadedKeyRanges, Handle);
         hFunc(TEvPrivate::TEvReportBaseStatistics, Handle);
         hFunc(TEvPrivate::TEvReportExecutorStatistics, Handle);
         HFunc(NEvents::TDataEvents::TEvWrite, Handle);
