@@ -66,11 +66,10 @@ TConclusionStatus TGeneralCompactColumnEngineChanges::DoConstructBlobs(TConstruc
 
         std::vector<TReadPortionInfoWithBlobs> portions = TReadPortionInfoWithBlobs::RestorePortions(accessors, Blobs, context.SchemaVersions);
         THashSet<ui64> usedPortionIds;
-        AFL_VERIFY(PortionsIndexSnapshot);
         std::vector<std::shared_ptr<ISubsetToMerge>> currentToMerge;
         for (auto&& i : portions) {
             AFL_VERIFY(usedPortionIds.emplace(i.GetPortionInfo().GetPortionId()).second);
-            currentToMerge.emplace_back(std::make_shared<TReadPortionToMerge>(std::move(i), GranuleMeta, PortionsIndexSnapshot));
+            currentToMerge.emplace_back(std::make_shared<TReadPortionToMerge>(std::move(i), GranuleMeta, HasDeletions, PortionsIndexSnapshot));
         }
 
         const auto buildPortionsToMerge = [&](const std::vector<std::shared_ptr<ISubsetToMerge>>& toMerge, const bool useDeletion) {
@@ -96,7 +95,7 @@ TConclusionStatus TGeneralCompactColumnEngineChanges::DoConstructBlobs(TConstruc
                     auto merged = BuildAppendedPortionsByChunks(context, buildPortionsToMerge(toMerge, false), resultFiltered, stats);
                     if (merged.size()) {
                         appendedToMerge.emplace_back(
-                            std::make_shared<TWritePortionsToMerge>(std::move(merged), GranuleMeta, PortionsIndexSnapshot));
+                            std::make_shared<TWritePortionsToMerge>(std::move(merged), GranuleMeta, HasDeletions, PortionsIndexSnapshot));
                     }
                     toMerge.clear();
                     sumMemory = 0;
@@ -113,7 +112,7 @@ TConclusionStatus TGeneralCompactColumnEngineChanges::DoConstructBlobs(TConstruc
                 if (appendedToMerge.size()) {
                     if (merged.size()) {
                         appendedToMerge.emplace_back(
-                            std::make_shared<TWritePortionsToMerge>(std::move(merged), GranuleMeta, PortionsIndexSnapshot));
+                            std::make_shared<TWritePortionsToMerge>(std::move(merged), GranuleMeta, HasDeletions, PortionsIndexSnapshot));
                     }
                 } else {
                     context.Counters.OnCompactionCorrectMemory(totalSumMemory);
