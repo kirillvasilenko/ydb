@@ -429,7 +429,7 @@ void TColumnShard::UpdateResourceMetrics(const TActorContext& ctx, const TUsage&
         return;
     }
 
-    ui64 storageBytes = DataStats->GetStorageBytes();
+    ui64 blobStorageBytes = DataStats->GetBlobStorageBytes();
 
     ui64 memory = MemoryUsage();
 
@@ -437,7 +437,7 @@ void TColumnShard::UpdateResourceMetrics(const TActorContext& ctx, const TUsage&
     metrics->CPU.Increment(usage.CPUExecTime, now);
     metrics->Network.Increment(usage.Network, now);
     //metrics->StorageSystem
-    metrics->StorageUser.Set(storageBytes);
+    metrics->StorageUser.Set(blobStorageBytes);
     metrics->Memory.Set(memory);
     //metrics->ReadThroughput
     //metrics->WriteThroughput

@@ -281,7 +281,6 @@ TColumnEngineForLogs::TColumnEngineForLogs(const ui64 tabletId, const std::share
 void TColumnEngineForLogs::InitDerivedState() {
     AFL_VERIFY(SchemaObjectsCache);
     ActualizationController = std::make_shared<NActualizer::TController>();
-    DataStats->SetSmallBlobThresholdBytes(StoragesManager->GetDefaultOperator()->GetSmallBlobThresholdBytes());
 }
 
 void TColumnEngineForLogs::RegisterSchemaVersion(
