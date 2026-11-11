@@ -258,7 +258,7 @@ public:
     TString DebugString() const {
         return TStringBuilder() << "(granule:" << GetPathId() << ";"
                                 << "path_id:" << GetPathId() << ";"
-                                << "size:" << (GetDataStats().GetActiveWritten() + GetDataStats().GetActiveCompacted()).GetBlobBytes() << ";"
+                                << "size:" << (GetDataStats().GetWritten() + GetDataStats().GetCompacted()).GetBlobBytes() << ";"
                                 << "portions_count:" << Portions.size() << ";"
                                 << ")";
     }
