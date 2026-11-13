@@ -230,7 +230,7 @@ public:
         DataAccessorsManager->AskData(request);
     }
 
-    const NColumnShard::TGranuleDataStats& GetDataStats() const;
+    const NColumnShard::TDataStatsByStorage& GetDataStats() const;
     void RefreshDataCounters() const;
 
     NStorageOptimizer::TOptimizationPriority GetCompactionPriority() const {
