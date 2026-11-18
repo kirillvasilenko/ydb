@@ -60,7 +60,8 @@ void TShardDataStats::AddToGroup(const NOlap::TPortionInfo& portion, const EPort
 
 void TShardDataStats::RemoveFromGroup(const NOlap::TPortionInfo& portion, const EPortionGroup group) {
     auto granuleIt = Granules.find(portion.GetPathId());
-    AFL_VERIFY(granuleIt != Granules.end())("path_id", portion.GetPathId());
+    YDB_LOG_VERIFY(granuleIt != Granules.end(),
+        {"pathId", portion.GetPathId()});
     auto& granule = granuleIt->second;
     const ui64 smallBlobBytes = portion.GetSmallBlobBytesInBlobStorage(GetSmallBlobThreshold(GetBlobStorageId()));
     granule.RemovePortion(portion, group, smallBlobBytes);
@@ -114,22 +115,27 @@ void TShardDataStats::AddPortionOnLoad(const std::shared_ptr<NOlap::TPortionInfo
 }
 
 void TShardDataStats::AddPortionOnComplete(const std::shared_ptr<NOlap::TPortionInfo>& portion, const EPortionGroup group) {
-    AFL_VERIFY(StorageStatsToPersist.empty())("error", "an Execute changed portions without PersistEssentials");
+    YDB_LOG_VERIFY(StorageStatsToPersist.empty(),
+        {"error", "an Execute changed portions without PersistEssentials"});
     DoAddPortionOnComplete(portion, group);
 }
 
 void TShardDataStats::RemovePortionOnComplete(const std::shared_ptr<NOlap::TPortionInfo>& portion, const EPortionGroup group) {
-    AFL_VERIFY(StorageStatsToPersist.empty())("error", "an Execute changed portions without PersistEssentials");
+    YDB_LOG_VERIFY(StorageStatsToPersist.empty(),
+        {"error", "an Execute changed portions without PersistEssentials"});
     DoRemovePortionOnComplete(portion, group);
 }
 
 void TShardDataStats::PersistEssentials(NOlap::IDbWrapper& db) {
     for (const auto& [pathId, storageId] : StorageStatsToPersist) {
         auto storagesIt = Essentials.find(pathId);
-        AFL_VERIFY(storagesIt != Essentials.end())("path_id", pathId);
+        YDB_LOG_VERIFY(storagesIt != Essentials.end(),
+            {"pathId", pathId});
         auto& storages = storagesIt->second;
         auto statsIt = storages.find(storageId);
-        AFL_VERIFY(statsIt != storages.end())("path_id", pathId)("storage_id", storageId);
+        YDB_LOG_VERIFY(statsIt != storages.end(),
+            {"pathId", pathId},
+            {"storageId", storageId});
         const TEssentialStats& stats = statsIt->second;
         if (stats.IsEmpty()) {
             db.EraseEssentialStats(pathId, storageId);
@@ -147,7 +153,9 @@ void TShardDataStats::PersistEssentials(NOlap::IDbWrapper& db) {
 bool TShardDataStats::LoadEssentials(NOlap::IDbWrapper& db) {
     THashMap<TInternalPathId, THashMap<TString, TEssentialStats>> loaded;
     if (!db.LoadEssentialStats([&](const TInternalPathId pathId, const TString& storageId, NKikimrTxColumnShard::TEssentialStats&& stats) {
-            AFL_VERIFY(loaded[pathId].emplace(storageId, TEssentialStats(stats)).second)("path_id", pathId)("storage_id", storageId);
+            YDB_LOG_VERIFY(loaded[pathId].emplace(storageId, TEssentialStats(stats)).second,
+                {"pathId", pathId},
+                {"storageId", storageId});
         })) {
         return false;
     }
@@ -156,7 +164,7 @@ bool TShardDataStats::LoadEssentials(NOlap::IDbWrapper& db) {
 }
 
 void TShardDataStats::RecalculateEssentials(NOlap::IDbWrapper& db) {
-    AFL_VERIFY(StorageStatsToPersist.empty());
+    YDB_LOG_VERIFY(StorageStatsToPersist.empty());
     THashMap<TInternalPathId, THashMap<TString, TEssentialStats>> recounted;
     for (const auto& [pathId, granule] : Granules) {
         for (const auto& [storageId, storage] : granule.GetStorages()) {

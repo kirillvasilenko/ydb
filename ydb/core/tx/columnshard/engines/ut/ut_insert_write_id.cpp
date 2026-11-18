@@ -50,16 +50,16 @@ public:
     }
 
     void WriteEssentialStats(const TInternalPathId, const TString&, const NKikimrTxColumnShard::TEssentialStats&) override {
-        AFL_VERIFY(false);
+        YDB_LOG_VERIFY(false);
     }
 
     void EraseEssentialStats(const TInternalPathId, const TString&) override {
-        AFL_VERIFY(false);
+        YDB_LOG_VERIFY(false);
     }
 
     bool LoadEssentialStats(
         const std::function<void(const TInternalPathId, const TString&, NKikimrTxColumnShard::TEssentialStats&&)>&) override {
-        AFL_VERIFY(false);
+        YDB_LOG_VERIFY(false);
         return false;
     }
 

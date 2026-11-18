@@ -316,7 +316,7 @@ bool TDbWrapper::LoadEssentialStats(
     }
     while (!rowset.EndOfSet()) {
         NKikimrTxColumnShard::TEssentialStats stats;
-        AFL_VERIFY(stats.ParseFromString(rowset.GetValue<EssentialStats::Stats>()));
+        YDB_LOG_VERIFY(stats.ParseFromString(rowset.GetValue<EssentialStats::Stats>()));
         callback(TInternalPathId::FromRawValue(rowset.GetValue<EssentialStats::PathId>()), rowset.GetValue<EssentialStats::StorageId>(),
             std::move(stats));
         if (!rowset.Next()) {
