@@ -40,7 +40,7 @@ bool TTxWriteIndex::Execute(TTransactionContext& txc, const TActorContext& ctx) 
         NOlap::TBlobManagerDb blobManagerDb(txc.DB);
         changes->MutableBlobsAction().OnExecuteTxAfterAction(*Self, blobManagerDb, true);
 
-        Self->UpdateIndexCounters();
+        Self->PublishShardCounters();
     } else {
         TBlobGroupSelector dsGroupSelector(Self->Info());
         NOlap::TBlobManagerDb blobsDb(txc.DB);

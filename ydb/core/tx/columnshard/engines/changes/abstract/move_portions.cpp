@@ -16,13 +16,12 @@ std::shared_ptr<NDataLocks::ILock> TMovePortionsChange::DoBuildDataLock(const TS
 
 void TMovePortionsChange::DoApplyOnExecute(
     NColumnShard::TColumnShard* /* self */, TWriteIndexContext& context, const TDataAccessorsResult& fetchedDataAccessor) {
-    auto schemaPtr = context.EngineLogs.GetVersionedIndex().GetLastSchema();
     for (auto&& [_, i] : Portions) {
         const auto pred = [&](TPortionInfo& portionCopy) {
             portionCopy.MutableMeta().ResetCompactionLevel(TargetCompactionLevel.value_or(0));
         };
         context.EngineLogs.GetGranuleVerified(i->GetPathId()).ModifyPortionOnExecute(context.DBWrapper,
-            fetchedDataAccessor.GetPortionAccessorVerified(i->GetPortionId()), pred, schemaPtr->GetIndexInfo().GetPKFirstColumnId());
+            fetchedDataAccessor.GetPortionAccessorVerified(i->GetPortionId()), pred);
     }
 }
 

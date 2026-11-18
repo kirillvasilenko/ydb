@@ -6,6 +6,7 @@
 #include <ydb/core/tx/columnshard/common/blob.h>
 #include <ydb/core/tx/columnshard/common/path_id.h>
 #include <ydb/core/tx/columnshard/common/snapshot.h>
+#include <ydb/core/tx/columnshard/engines/protos/essential_stats.pb.h>
 #include <ydb/core/tx/columnshard/engines/protos/portion_info.pb.h>
 
 namespace NKikimrTxColumnShard {
@@ -65,6 +66,14 @@ public:
 
     virtual void WriteCounter(ui32 counterId, ui64 value) = 0;
     virtual bool LoadCounters(const std::function<void(ui32 id, ui64 value)>& callback) = 0;
+
+    virtual void WriteEssentialStats(
+        const TInternalPathId pathId, const TString& storageId, const NKikimrTxColumnShard::TEssentialStats& stats) = 0;
+    virtual void EraseEssentialStats(const TInternalPathId pathId, const TString& storageId) = 0;
+    virtual bool LoadEssentialStats(
+        const std::function<void(const TInternalPathId pathId, const TString& storageId, NKikimrTxColumnShard::TEssentialStats&& stats)>&
+            callback) = 0;
+
     virtual TConclusion<THashMap<TInternalPathId, std::map<TSnapshot, TGranuleShardingInfo>>> LoadGranulesShardingInfo() = 0;
 };
 
@@ -102,6 +111,13 @@ public:
 
     void WriteCounter(ui32 counterId, ui64 value) override;
     bool LoadCounters(const std::function<void(ui32 id, ui64 value)>& callback) override;
+
+    void WriteEssentialStats(
+        const TInternalPathId pathId, const TString& storageId, const NKikimrTxColumnShard::TEssentialStats& stats) override;
+    void EraseEssentialStats(const TInternalPathId pathId, const TString& storageId) override;
+    bool LoadEssentialStats(
+        const std::function<void(const TInternalPathId pathId, const TString& storageId, NKikimrTxColumnShard::TEssentialStats&& stats)>&
+            callback) override;
 
     virtual TConclusion<THashMap<TInternalPathId, std::map<TSnapshot, TGranuleShardingInfo>>> LoadGranulesShardingInfo() override;
 

@@ -14,7 +14,6 @@ namespace NKikimr::NOlap {
 
 void TChangesWithAppend::DoWriteIndexOnExecute(NColumnShard::TColumnShard* self, TWriteIndexContext& context) {
     THashSet<ui64> usedPortionIds = PortionsToRemove.GetPortionIds();
-    auto schemaPtr = context.EngineLogs.GetVersionedIndex().GetLastSchema();
     if (PortionsToRemove.GetSize() || PortionsToMove.GetSize()) {
         YDB_LOG_VERIFY(FetchedDataAccessors);
         PortionsToRemove.ApplyOnExecute(self, context, *FetchedDataAccessors);
@@ -37,7 +36,8 @@ void TChangesWithAppend::DoWriteIndexOnExecute(NColumnShard::TColumnShard* self,
         const auto& portionInfo = portionInfoWithBlobs.GetPortionResult().GetPortionInfoPtr();
         YDB_LOG_VERIFY(usedPortionIds.emplace(portionInfo->GetPortionId()).second,
             {"portionInfo", portionInfo->DebugString(true)});
-        portionInfoWithBlobs.GetPortionResult().SaveToDatabase(context.DBWrapper, schemaPtr->GetIndexInfo().GetPKFirstColumnId(), false);
+        context.EngineLogs.GetGranuleVerified(portionInfo->GetPathId()).AppendPortionOnExecute(context.DBWrapper,
+            portionInfoWithBlobs.GetPortionResult());
     }
 }
 

@@ -294,6 +294,38 @@ bool TDbWrapper::LoadCounters(const std::function<void(ui32 id, ui64 value)>& ca
     return NColumnShard::Schema::IndexCounters_Load(db, callback);
 }
 
+void TDbWrapper::WriteEssentialStats(
+    const TInternalPathId pathId, const TString& storageId, const NKikimrTxColumnShard::TEssentialStats& stats) {
+    using EssentialStats = NColumnShard::Schema::EssentialStats;
+    NIceDb::TNiceDb db(Database);
+    db.Table<EssentialStats>().Key(pathId.GetRawValue(), storageId).Update(NIceDb::TUpdate<EssentialStats::Stats>(stats.SerializeAsString()));
+}
+
+void TDbWrapper::EraseEssentialStats(const TInternalPathId pathId, const TString& storageId) {
+    NIceDb::TNiceDb db(Database);
+    db.Table<NColumnShard::Schema::EssentialStats>().Key(pathId.GetRawValue(), storageId).Delete();
+}
+
+bool TDbWrapper::LoadEssentialStats(
+    const std::function<void(const TInternalPathId pathId, const TString& storageId, NKikimrTxColumnShard::TEssentialStats&& stats)>& callback) {
+    using EssentialStats = NColumnShard::Schema::EssentialStats;
+    NIceDb::TNiceDb db(Database);
+    auto rowset = db.Table<EssentialStats>().Select();
+    if (!rowset.IsReady()) {
+        return false;
+    }
+    while (!rowset.EndOfSet()) {
+        NKikimrTxColumnShard::TEssentialStats stats;
+        AFL_VERIFY(stats.ParseFromString(rowset.GetValue<EssentialStats::Stats>()));
+        callback(TInternalPathId::FromRawValue(rowset.GetValue<EssentialStats::PathId>()), rowset.GetValue<EssentialStats::StorageId>(),
+            std::move(stats));
+        if (!rowset.Next()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 TConclusion<THashMap<TInternalPathId, std::map<NOlap::TSnapshot, TGranuleShardingInfo>>> TDbWrapper::LoadGranulesShardingInfo() {
     using Schema = NColumnShard::Schema;
     NIceDb::TNiceDb db(Database);

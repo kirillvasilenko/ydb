@@ -30,6 +30,25 @@ public:
     }
 };
 
+class TTxRecalculateEssentialStats: public TTransactionBase<TColumnShard> {
+public:
+    using TBase::TBase;
+
+    bool Execute(TTransactionContext& txc, const TActorContext& /*ctx*/) override {
+        txc.DB.NoMoreReadsForTx();
+        NOlap::TDbWrapper db(txc.DB, nullptr);
+        Self->DataStats->RecalculateEssentials(db);
+        return true;
+    }
+
+    void Complete(const TActorContext& /*ctx*/) override {
+    }
+
+    TTxType GetTxType() const override {
+        return TXTYPE_RECALCULATE_ESSENTIAL_STATS;
+    }
+};
+
 void TColumnShard::StartDeferredPortionLoading(const TActorContext& ctx) {
     if (!DeferredPortionLoader.Start()) {
         OnAllPortionsLoaded(ctx);
@@ -57,7 +76,8 @@ void TColumnShard::OnPortionsBatchLoaded(TDeferredPortionLoader::TBatch&& batch,
 }
 
 void TColumnShard::OnAllPortionsLoaded(const TActorContext& ctx) {
-    UpdateIndexCounters();
+    PublishShardCounters();
+    Execute(new TTxRecalculateEssentialStats(this), ctx);
     TryStartFindEmptyHistoryIntervals(ctx);
     ctx.Send(SelfId(), new TEvPrivate::TEvPrefetchPortionsMetadata());
     ui64 portionsCount = 0;

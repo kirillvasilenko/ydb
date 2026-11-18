@@ -39,6 +39,7 @@ private:
 
     mutable bool AllowInsertionFlag = false;
     const TInternalPathId PathId;
+    const ui32 FirstPKColumnId;
     std::shared_ptr<NDataAccessorControl::IDataAccessorsManager> DataAccessorsManager;
     const NColumnShard::TGranuleDataCounters Counters;
     std::shared_ptr<NColumnShard::TShardDataStats> DataStats;
@@ -51,9 +52,10 @@ private:
     NGranule::NPortionsIndex::TPortionsIndex PortionsIndex;
     TLoadedKeyRanges LoadedKeyRanges = TLoadedKeyRanges::BuildNothing();
 
-    void OnAddCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool refreshCounters = true, const bool onLoad = false);
-    void OnRemoveCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool refreshCounters = true);
-    void AddInsertedPortion(const std::shared_ptr<TWrittenPortionInfo>& portion);
+    static NColumnShard::EPortionGroup GetCommittedPortionGroup(const TPortionInfo& portion);
+    void OnAddCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool onLoad);
+    void OnRemoveCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool publishCounters = true);
+    void AddInsertedPortion(const std::shared_ptr<TWrittenPortionInfo>& portion, const bool onLoad);
     std::shared_ptr<TWrittenPortionInfo> ExtractInsertedPortion(const TInsertWriteId insertWriteId);
 
     TConclusion<std::shared_ptr<TPortionInfo>> GetInnerPortion(const TPortionInfo::TConstPtr& portion) const {
@@ -93,15 +95,16 @@ public:
     }
 
     template <class TModifier>
-    void ModifyPortionOnExecute(
-        IDbWrapper& wrapper, const TPortionDataAccessor& portion, const TModifier& modifier, const ui32 firstPKColumnId) const {
+    void ModifyPortionOnExecute(IDbWrapper& wrapper, const TPortionDataAccessor& portion, const TModifier& modifier) const {
         const auto innerPortion = GetInnerPortion(portion.GetPortionInfoPtr()).DetachResult();
         YDB_LOG_VERIFY((ui64)innerPortion.get() == (ui64)&portion.GetPortionInfo());
         auto copy = innerPortion->MakeCopy();
         modifier(*copy);
+        DataStats->RemovePortionOnExecute(*innerPortion, GetCommittedPortionGroup(*innerPortion));
+        DataStats->AddPortionOnExecute(*copy, GetCommittedPortionGroup(*copy));
         if (!HasAppData() || AppDataVerified().ColumnShardConfig.GetColumnChunksV0Usage()) {
             auto accessorCopy = portion.SwitchPortionInfo(std::move(copy));
-            accessorCopy.SaveToDatabase(wrapper, firstPKColumnId, false);
+            accessorCopy.SaveToDatabase(wrapper, FirstPKColumnId, false);
         } else {
             wrapper.WritePortion(portion.GetBlobIds(), *copy);
         }
@@ -111,13 +114,12 @@ public:
     void ModifyPortionOnComplete(const TPortionInfo::TConstPtr& portion, const TModifier& modifier) {
         const auto innerPortion = GetInnerPortion(portion).DetachResult();
         YDB_LOG_VERIFY((ui64)innerPortion.get() == (ui64)portion.get());
-        OnRemoveCommittedPortion(innerPortion, /*refreshCounters=*/false);
+        OnRemoveCommittedPortion(innerPortion, /*publishCounters=*/false);
         modifier(innerPortion);
-        OnAddCommittedPortion(innerPortion);
+        OnAddCommittedPortion(innerPortion, /*onLoad=*/false);
     }
 
-    void InsertPortionOnExecute(
-        NTabletFlatExecutor::TTransactionContext& txc, const std::shared_ptr<TPortionDataAccessor>& portion, const ui64 firstPKColumnId) const;
+    void InsertPortionOnExecute(NTabletFlatExecutor::TTransactionContext& txc, const std::shared_ptr<TPortionDataAccessor>& portion) const;
     void InsertPortionOnComplete(const std::shared_ptr<TPortionDataAccessor>& portion, IColumnEngine& engine);
 
     void CommitPortionOnExecute(
@@ -139,14 +141,19 @@ public:
         it->second->SetCommitSnapshot(ssRemove);
         TDbWrapper wrapper(txc.DB, nullptr);
         it->second->CommitToDatabase(wrapper);
+        DataStats->ChangeGroupOnExecute(*it->second, NColumnShard::EPortionGroup::Uncommitted, GetCommittedPortionGroup(*it->second));
     }
 
     void AbortPortionOnComplete(const TInsertWriteId insertWriteId, IColumnEngine& engine) {
         CommitPortionOnComplete(insertWriteId, engine);
     }
 
-    void CommitImmediateOnExecute(NTabletFlatExecutor::TTransactionContext& txc, const TSnapshot& snapshot, const TPortionDataAccessor& portion,
-        const ui64 firstPKColumnId) const;
+    void CommitImmediateOnExecute(
+        NTabletFlatExecutor::TTransactionContext& txc, const TSnapshot& snapshot, const TPortionDataAccessor& portion) const;
+
+    // a committed portion: the output of compaction, TTL or eviction, or one received by data sharing
+    void AppendPortionOnExecute(IDbWrapper& db, const TPortionDataAccessor& portion) const;
+    void ErasePortionOnExecute(IDbWrapper& db, const TPortionDataAccessor& portion) const;
 
     std::vector<NStorageOptimizer::TTaskDescription> GetOptimizerTasksDescription() const {
         return OptimizerPlanner->GetTasksDescription();
@@ -231,7 +238,7 @@ public:
     }
 
     const NColumnShard::TDataStatsByStorage& GetDataStats() const;
-    void RefreshDataCounters() const;
+    void PublishTableCounters() const;
 
     NStorageOptimizer::TOptimizationPriority GetCompactionPriority() const {
         return OptimizerPlanner->GetUsefulMetric();
@@ -320,6 +327,9 @@ public:
 
     void SetLoadedKeyRanges(TLoadedKeyRanges&& loadedKeyRanges) {
         LoadedKeyRanges = std::move(loadedKeyRanges);
+        if (LoadedKeyRanges.CoversAll()) {
+            PublishTableCounters();
+        }
     }
 
     const TPortionInfo& GetPortionVerified(const ui64 portion) const {

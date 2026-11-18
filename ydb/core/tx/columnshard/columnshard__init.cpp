@@ -64,6 +64,7 @@ std::shared_ptr<ITxReader> TTxInit::BuildReader() {
     result->AddChildren(std::make_shared<NLoading::TSpecialValuesInitializer>("special_values", Self));
     result->AddChildren(std::make_shared<NLoading::TOperationsManagerInitializer>("operations_manager", Self));
     result->AddChildren(std::make_shared<NLoading::TTablesManagerInitializer>("tables_manager", Self));
+    result->AddChildren(std::make_shared<NLoading::TEssentialStatsInitializer>("essential_stats", Self));
     result->AddChildren(std::make_shared<NLoading::TTxControllerInitializer>("tx_controller", Self));
     result->AddChildren(std::make_shared<NLoading::TStoragesManagerInitializer>("storages_manager", Self));
     result->AddChildren(std::make_shared<NLoading::TDBLocksInitializer>("db_locks", Self));
@@ -91,7 +92,11 @@ bool TTxInit::Execute(TTransactionContext& txc, const TActorContext& ctx) {
             return false;
         }
         StartReader = nullptr;
-        Self->UpdateIndexCounters();
+        if (!Self->DeferredPortionLoader.IsEnabled()) {
+            NOlap::TDbWrapper db(txc.DB, nullptr);
+            Self->DataStats->RecalculateEssentials(db);
+            Self->PublishShardCounters();
+        }
         Self->UpdateResourceMetrics(ctx, {});
     } catch (const TNotReadyTabletException&) {
         YDB_LOG_ERROR_COMP(NActors::NStructuredLog::TLogStack::GetComponent(), "",

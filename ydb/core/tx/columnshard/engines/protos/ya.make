@@ -4,6 +4,7 @@ PROTOC_FATAL_WARNINGS()
 SRCS(
     portion_info.proto
     index.proto
+    essential_stats.proto
 )
 
 PEERDIR(

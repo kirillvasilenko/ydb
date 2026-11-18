@@ -39,7 +39,6 @@ bool TTxBlobsWritingFinished::DoExecute(TTransactionContext& txc, const TActorCo
         }
     }
     auto& granule = index.MutableGranuleVerified(Pack.GetPathId());
-    const ui64 firstPKColumnId = Self->TablesManager.GetIndexInfo(*CommitSnapshot).GetPKFirstColumnId();
     NOlap::TDbWrapper dbWrapper(txc.DB, nullptr);
     for (auto&& portion : Pack.MutablePortions()) {
         YDB_LOG_VERIFY(portion.GetPortionInfoConstructor()->GetPortionConstructor().GetType() == NOlap::EPortionType::Written);
@@ -48,11 +47,11 @@ bool TTxBlobsWritingFinished::DoExecute(TTransactionContext& txc, const TActorCo
         constructor->SetInsertWriteId(index.BuildNextInsertWriteId(dbWrapper));
         portion.Finalize(Self, txc);
         if (PackBehaviour == EOperationBehaviour::NoTxWrite) {
-            granule.CommitImmediateOnExecute(txc, *CommitSnapshot, portion.GetPortionInfo(), firstPKColumnId);
+            granule.CommitImmediateOnExecute(txc, *CommitSnapshot, portion.GetPortionInfo());
         } else {
             InsertWriteIds.emplace_back(constructor->GetInsertWriteIdVerified());
             PortionIds.emplace_back(portion.GetPortionInfo().GetPortionInfo().GetPortionId());
-            granule.InsertPortionOnExecute(txc, portion.GetPortionInfoPtr(), firstPKColumnId);
+            granule.InsertPortionOnExecute(txc, portion.GetPortionInfoPtr());
         }
     }
 
@@ -104,6 +103,7 @@ bool TTxBlobsWritingFinished::DoExecute(TTransactionContext& txc, const TActorCo
             Results.emplace_back(std::move(ev), writeMeta.GetSource(), op->GetCookie());
         }
     }
+    index.GetDataStats()->PersistEssentials(dbWrapper);
     TransactionTime = TInstant::Now() - startTransactionTime;
     return true;
 }

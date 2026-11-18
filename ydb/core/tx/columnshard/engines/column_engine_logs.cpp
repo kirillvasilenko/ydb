@@ -431,11 +431,10 @@ std::shared_ptr<ITxReader> TColumnEngineForLogs::BuildLoader(
 }
 
 bool TColumnEngineForLogs::FinishLoading(const bool portionsLoaded) {
-    for (const auto& [pathId, spg] : GranulesStorage->GetTables()) {
-        if (portionsLoaded) {
-            spg->SetLoadedKeyRanges(TLoadedKeyRanges::BuildEverything());
+    if (portionsLoaded) {
+        for (const auto& [_, granule] : GranulesStorage->GetTables()) {
+            granule->SetLoadedKeyRanges(TLoadedKeyRanges::BuildEverything());
         }
-        spg->RefreshDataCounters();
     }
 
     Y_ABORT_UNLESS(!(LastPortion >> 63), "near to int overflow");

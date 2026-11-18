@@ -34,7 +34,7 @@ void TCleanupPortionsColumnEngineChanges::DoWriteIndexOnExecute(NColumnShard::TC
 
     for (auto&& p : PortionsToDrop) {
         const auto& accessor = FetchedDataAccessors->GetPortionAccessorVerified(p->GetPortionId());
-        accessor.RemoveFromDatabase(context.DBWrapper);
+        context.EngineLogs.GetGranuleVerified(p->GetPathId()).ErasePortionOnExecute(context.DBWrapper, accessor);
         accessor.FillBlobIdsByStorage(blobIdsByStorage, context.EngineLogs.GetVersionedIndex());
         pathIds.emplace(p->GetPathId());
     }

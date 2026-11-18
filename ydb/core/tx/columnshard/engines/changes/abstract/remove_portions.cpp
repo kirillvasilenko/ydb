@@ -29,7 +29,6 @@ void TRemovePortionsChange::DoApplyOnExecute(
     }
 
     THashSet<ui64> usedPortionIds;
-    auto schemaPtr = context.EngineLogs.GetVersionedIndex().GetLastSchema();
     for (auto&& [_, i] : Portions) {
         Y_ABORT_UNLESS(!i->HasRemoveSnapshot());
         YDB_LOG_VERIFY(usedPortionIds.emplace(i->GetPortionId()).second,
@@ -38,7 +37,7 @@ void TRemovePortionsChange::DoApplyOnExecute(
             portionCopy.SetRemoveSnapshot(context.Snapshot);
         };
         context.EngineLogs.GetGranuleVerified(i->GetPathId()).ModifyPortionOnExecute(context.DBWrapper,
-            fetchedDataAccessors.GetPortionAccessorVerified(i->GetPortionId()), pred, schemaPtr->GetIndexInfo().GetPKFirstColumnId());
+            fetchedDataAccessors.GetPortionAccessorVerified(i->GetPortionId()), pred);
     }
 }
 

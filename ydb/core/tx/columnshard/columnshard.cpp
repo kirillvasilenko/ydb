@@ -410,11 +410,11 @@ void TColumnShard::Handle(TEvMediatorTimecast::TEvNotifyPlanStep::TPtr& ev, cons
     EnqueueBackgroundActivities(true);
 }
 
-void TColumnShard::UpdateIndexCounters() {
-    if (!TablesManager.HasPrimaryIndex()) {
+void TColumnShard::PublishShardCounters() {
+    if (!TablesManager.HasPrimaryIndex() || !TablesManager.GetPrimaryIndexSafe().AreAllPortionsLoaded(std::nullopt)) {
         return;
     }
-    DataStats->UpdateTabletCounters(*Counters.GetTabletCounters());
+    DataStats->PublishShardCounters(*Counters.GetTabletCounters());
 }
 
 ui64 TColumnShard::MemoryUsage() const {
@@ -469,7 +469,7 @@ void TColumnShard::FillOlapStats(const TActorContext& ctx, std::unique_ptr<TEvDa
         tableStats->SetInFlightTxCount(executor->GetStats().TxInFly);
         tableStats->SetHasLoanedParts(executor->HasLoanedParts());
     }
-    DataStats->FillTotalTableStats(*tableStats);
+    DataStats->FillTotalEssentials(*tableStats);
 }
 
 void TColumnShard::FillColumnTableStats(
@@ -501,7 +501,7 @@ void TColumnShard::FillColumnTableStats(
             }
 
             Counters.FillTableStats(internalPathId, *periodicTableStats->MutableTableStats());
-            DataStats->FillTableStats(internalPathId, *periodicTableStats->MutableTableStats());
+            DataStats->FillTableEssentials(internalPathId, *periodicTableStats->MutableTableStats());
             YDB_LOG_DEBUG("",
                 {"event", "Add stats for table"},
                 {"tableLocalID", schemeShardLocalPathId});

@@ -1,7 +1,9 @@
+#include <ydb/core/protos/table_stats.pb.h>
 #include <ydb/core/sys_view/common/registry.h>
 #include <ydb/core/testlib/actors/block_events.h>
 #include <ydb/core/tx/columnshard/columnshard_impl.h>
 #include <ydb/core/tx/columnshard/engines/column_engine_logs.h>
+#include <ydb/core/tx/columnshard/engines/protos/essential_stats.pb.h>
 #include <ydb/core/tx/columnshard/hooks/testing/controller.h>
 #include <ydb/core/tx/columnshard/test_helper/columnshard_ut_common.h>
 #include <ydb/core/tx/columnshard/test_helper/shard_reader.h>
@@ -16,7 +18,39 @@ using namespace NTxUT;
 
 namespace {
 
-using TDefaultTestsController = NKikimr::NYDBTest::NColumnShard::TController;
+class TDefaultTestsController: public NKikimr::NYDBTest::NColumnShard::TController {
+public:
+    NYDBTest::ILocalDBModifier::TPtr LocalDBModifier;
+
+    NYDBTest::ILocalDBModifier::TPtr BuildLocalBaseModifier() const override {
+        return LocalDBModifier;
+    }
+};
+
+const TInternalPathId TableWithoutPortions = TInternalPathId::FromRawValue(999);
+
+// the rows of a binary that counted wrong: the row of the table is missing, and a table without portions has one
+class TWrongEssentialStats: public NYDBTest::ILocalDBModifier {
+public:
+    void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {
+        NIceDb::TNiceDb db(txc.DB);
+        std::vector<std::pair<ui64, TString>> keys;
+        auto rowset = db.Table<Schema::EssentialStats>().Select();
+        UNIT_ASSERT(rowset.IsReady());
+        while (!rowset.EndOfSet()) {
+            keys.emplace_back(rowset.GetValue<Schema::EssentialStats::PathId>(), rowset.GetValue<Schema::EssentialStats::StorageId>());
+            UNIT_ASSERT(rowset.Next());
+        }
+        for (const auto& [pathId, storageId] : keys) {
+            db.Table<Schema::EssentialStats>().Key(pathId, storageId).Delete();
+        }
+        NKikimrTxColumnShard::TEssentialStats stats;
+        stats.SetRows(5);
+        db.Table<Schema::EssentialStats>()
+            .Key(TableWithoutPortions.GetRawValue(), NOlap::NBlobOperations::TGlobal::DefaultStorageId)
+            .Update(NIceDb::TUpdate<Schema::EssentialStats::Stats>(stats.SerializeAsString()));
+    }
+};
 
 const ui64 TableId = 1;
 const ui64 LockId = 7;
@@ -108,6 +142,27 @@ public:
 
     const NOlap::TColumnEngineForLogs& Engine() {
         return Controller->GetTheOnlyShard()->GetIndexAs<NOlap::TColumnEngineForLogs>();
+    }
+
+    NKikimrTableStats::TTableStats GetTableStats() {
+        return GetTableStats(Engine().GetTables().begin()->first);
+    }
+
+    NKikimrTableStats::TTableStats GetTableStats(const TInternalPathId pathId) {
+        NKikimrTableStats::TTableStats stats;
+        Engine().GetDataStats()->FillTableEssentials(pathId, stats);
+        return stats;
+    }
+
+    // what the rows must hold: the stats of the portions in memory
+    NKikimrTableStats::TTableStats RecountTableStats() {
+        const auto& granule = Engine().GetDataStats()->GetGranuleStats(Engine().GetTables().begin()->first);
+        NKikimrTableStats::TTableStats stats;
+        stats.SetRowCount(granule.GetAll().GetRecordsCount());
+        stats.SetDataSize(granule.GetAll().GetBlobBytes());
+        stats.SetSmallBlobsVolumeBytes(granule.GetSmallBlobs().VolumeBytes);
+        stats.SetSmallBlobsCount(granule.GetSmallBlobs().Count);
+        return stats;
     }
 
     std::unique_ptr<TShardReader> StartScan(const std::pair<ui64, ui64> rows) {
@@ -364,6 +419,107 @@ Y_UNIT_TEST_SUITE(TColumnShardDeferredPortionLoading) {
         shard.Reboot();
         UNIT_ASSERT_VALUES_EQUAL(shard.GetSimpleCounter("ColumnShard/Index/InsertedPortions"), 3);
         UNIT_ASSERT_VALUES_EQUAL(shard.GetSimpleCounter("ColumnShard/Index/InsertedRows"), 300);
+    }
+
+    // every change updates the rows in its Execute, so the rows read at the start are what the portions hold
+    Y_UNIT_TEST(EssentialStatsFollowEveryChange) {
+        TShardWithPortions shard({ .TilingJson = R"({"accumulator_portion_size_limit":1,"last_level_candidate_portions_overload":10})" });
+        shard.Runtime.GetAppData().FeatureFlags.SetEnableCompactionOverloadDetection(false);
+        for (ui32 i = 0; i < 20; ++i) {
+            shard.WriteAndCommit(TableId, { 600, 610 });
+        }
+        shard.StartWrite({ 2000, 2010 }, NEvWrite::EModificationType::Upsert, 0);
+        UNIT_ASSERT_VALUES_EQUAL(shard.WaitWriteStatus(), (ui32)NKikimrDataEvents::TEvWriteResult::STATUS_COMPLETED);
+        std::vector<ui64> writeIds;
+        UNIT_ASSERT(WriteData(shard.Runtime, shard.Sender, shard.TxId++, TableId, MakeTestBlob({ 1000, 1010 }, shard.Table.Schema),
+            shard.Table.Schema, true, &writeIds, NEvWrite::EModificationType::Upsert, LockId));
+        shard.NotifyLockGone();
+        shard.Runtime.WaitFor("lock aborted", [&] {
+            return !shard.Operations().GetLockOptional(LockId);
+        }, TDuration::Seconds(30));
+
+        shard.Controller->EnableBackground(NKikimr::NYDBTest::ICSController::EBackground::Compaction);
+        shard.SendPeriodicWakeup();
+        shard.Runtime.WaitFor("compacted", [&] {
+            return shard.Controller->GetCompactionFinishedCounter().Val() > 0;
+        }, TDuration::Seconds(60));
+        shard.Controller->DisableBackground(NKikimr::NYDBTest::ICSController::EBackground::Compaction);
+        shard.Controller->SetOverrideStalenessLivetimePing(TDuration::Zero());
+        shard.Controller->SetOverrideUsedSnapshotLivetime(TDuration::Zero());
+        // cleanup waits for the plan step to pass the read window, and commits move it
+        for (ui32 i = 0; i < 60 && !shard.Controller->GetPortionsErasedCounter().Val(); ++i) {
+            shard.Runtime.SimulateSleep(TDuration::Seconds(1));
+            shard.WriteAndCommit(TableId, { 3000, 3010 });
+            shard.SendPeriodicWakeup();
+        }
+        UNIT_ASSERT_GT(shard.Controller->GetPortionsErasedCounter().Val(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().ShortDebugString(), shard.RecountTableStats().ShortDebugString());
+
+        shard.Controller->DisableBackground(NKikimr::NYDBTest::ICSController::EBackground::Cleanup);
+        shard.AllowBatches(0);
+        shard.Reboot();
+        const TString fromRows = shard.GetTableStats().ShortDebugString();
+        shard.AllowBatches(std::nullopt);
+        shard.Runtime.WaitFor("loaded", [&] {
+            return shard.Engine().AreAllPortionsLoaded(std::nullopt);
+        }, TDuration::Seconds(30));
+        UNIT_ASSERT_VALUES_EQUAL(shard.RecountTableStats().ShortDebugString(), fromRows);
+    }
+
+    Y_UNIT_TEST(ShardCountersWaitForEveryPortion) {
+        TShardWithPortions shard;
+        shard.AllowBatches(0);
+        shard.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetSimpleCounter("ColumnShard/Index/InsertedRows"), 0);
+
+        shard.AllowBatches(std::nullopt);
+        shard.WaitBatchesLoaded(3);
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetSimpleCounter("ColumnShard/Index/InsertedRows"), 300);
+    }
+
+    Y_UNIT_TEST(FullLoadRecalculatesWrongEssentialStats) {
+        TShardWithPortions shard({ .DeferredLoading = false });
+        shard.Controller->LocalDBModifier = std::make_shared<TWrongEssentialStats>();
+        shard.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().GetRowCount(), 300);
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats(TableWithoutPortions).GetRowCount(), 0);
+    }
+
+    // a write while loading reaches the rows and the group stats in the same Execute, so the recalculation keeps it
+    Y_UNIT_TEST(AllLoadedRecalculatesWrongEssentialStats) {
+        TShardWithPortions shard;
+        shard.Controller->LocalDBModifier = std::make_shared<TWrongEssentialStats>();
+        shard.AllowBatches(1);
+        shard.Reboot();
+        shard.WaitBatchesLoaded(1);
+        shard.Controller->LocalDBModifier = nullptr;
+        shard.WriteAndCommit(TableId, { 1000, 1010 });
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().GetRowCount(), 10);
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats(TableWithoutPortions).GetRowCount(), 5);
+
+        shard.AllowBatches(std::nullopt);
+        shard.WaitBatchesLoaded(3);
+        shard.Runtime.WaitFor("essentials recalculated", [&] {
+            return shard.GetTableStats().GetRowCount() == 310;
+        }, TDuration::Seconds(30));
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats(TableWithoutPortions).GetRowCount(), 0);
+    }
+
+    // the rows keep the small blobs of the old threshold until the recount at ALL_LOADED
+    Y_UNIT_TEST(AllLoadedRecalculatesSmallBlobsAfterThresholdChange) {
+        TShardWithPortions shard;
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().GetSmallBlobsCount(), 3);
+        shard.Runtime.GetAppData().SmallBlobsQuotaConfig.SetSmallBlobSizeThresholdBytes(1);
+        shard.AllowBatches(0);
+        shard.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().GetSmallBlobsCount(), 3);
+
+        shard.AllowBatches(std::nullopt);
+        shard.WaitBatchesLoaded(3);
+        shard.Runtime.WaitFor("essentials recalculated", [&] {
+            return shard.GetTableStats().GetSmallBlobsCount() == 0;
+        }, TDuration::Seconds(30));
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().GetRowCount(), 300);
     }
 
     Y_UNIT_TEST(ScanWaitingForLoadedPortionsIsCounted) {

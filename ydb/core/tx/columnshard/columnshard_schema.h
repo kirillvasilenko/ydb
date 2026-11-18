@@ -56,7 +56,8 @@ struct Schema: NIceDb::Schema {
         NormalizerEventsTableId,
         ColumnsV1TableId,
         ColumnsV2TableId,
-        PortionsByLastKeyTableId
+        PortionsByLastKeyTableId,
+        EssentialStatsTableId
     };
 
     enum class ETierTables: ui32 {
@@ -786,12 +787,23 @@ struct Schema: NIceDb::Schema {
         using TColumns = TableColumns<PathId, PortionId, Metadata, BlobIds>;
     };
 
+    struct EssentialStats: Table<EssentialStatsTableId> {
+        struct PathId: Column<1, NScheme::NTypeIds::Uint64> {};
+
+        struct StorageId: Column<2, NScheme::NTypeIds::String> {};
+
+        struct Stats: Column<3, NScheme::NTypeIds::String> {};   // NKikimrTxColumnShard.TEssentialStats
+
+        using TKey = TableKey<PathId, StorageId>;
+        using TColumns = TableColumns<PathId, StorageId, Stats>;
+    };
+
     using TTables = SchemaTables<Value, TxInfo, SchemaPresetInfo, SchemaPresetVersionInfo, TtlSettingsPresetInfo, TtlSettingsPresetVersionInfo,
         TableInfo, TableVersionInfo, LongTxWrites, BlobsToKeep, BlobsToDelete, BlobsToDeleteWT, InsertTable, IndexGranules, IndexColumns,
         IndexCounters, SmallBlobs, OneToOneEvictedBlobs, Operations, TierBlobsDraft, TierBlobsToDelete, TierBlobsToDeleteWT, IndexIndexes,
         SharedBlobIds, BorrowedBlobIds, SourceSessions, DestinationSessions, OperationTxIds, IndexPortions, BackgroundSessions, ShardingInfo,
         Normalizers, NormalizerEvents, InFlightSnapshots, TxDependencies, TxStates, TxEvents, IndexColumnsV1, IndexColumnsV2, TableInfoV1,
-        CutHistoryRequests>;
+        CutHistoryRequests, EssentialStats>;
 
     //
 

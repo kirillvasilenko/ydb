@@ -157,6 +157,7 @@ class TSharingSessionsInitializer;
 class TInFlightReadsInitializer;
 class TSpecialValuesInitializer;
 class TTablesManagerInitializer;
+class TEssentialStatsInitializer;
 class TTiersManagerInitializer;
 }   // namespace NLoading
 
@@ -201,6 +202,7 @@ class TColumnShard: public TActor<TColumnShard>, public NTabletFlatExecutor::TTa
     friend class TEvWriteCommitPrimaryTransactionOperator;
     friend class TTxInit;
     friend class TTxLoadPortionsBatch;
+    friend class TTxRecalculateEssentialStats;
     friend class TTxCleanupSchemasWithnoData;
     friend class TTxInitSchema;
     friend class TTxUpdateSchema;
@@ -279,6 +281,7 @@ class TColumnShard: public TActor<TColumnShard>, public NTabletFlatExecutor::TTa
     friend class NLoading::TInFlightReadsInitializer;
     friend class NLoading::TSpecialValuesInitializer;
     friend class NLoading::TTablesManagerInitializer;
+    friend class NLoading::TEssentialStatsInitializer;
     friend class NLoading::TTiersManagerInitializer;
     friend class TWriteTask;
 
@@ -641,7 +644,7 @@ private:
     void SetupCleanupSchemas();
     void SetupGC();
 
-    void UpdateIndexCounters();
+    void PublishShardCounters();
     void UpdateResourceMetrics(const TActorContext& ctx, const TUsage& usage);
     ui64 MemoryUsage() const;
 

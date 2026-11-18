@@ -231,6 +231,10 @@ public:
         return DataStats->HasSchemaVersion(fromVersion, version);
     }
 
+    const std::shared_ptr<NColumnShard::TShardDataStats>& GetDataStats() const {
+        return DataStats;
+    }
+
     std::shared_ptr<TGranuleMeta> GetGranulePtrVerified(const TInternalPathId pathId) const {
         auto result = GetGranuleOptional(pathId);
         YDB_LOG_VERIFY(result,

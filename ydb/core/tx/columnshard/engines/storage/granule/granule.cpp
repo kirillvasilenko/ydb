@@ -15,9 +15,7 @@
 
 namespace NKikimr::NOlap {
 
-namespace {
-
-NColumnShard::EPortionGroup GetCommittedPortionGroup(const TPortionInfo& portion) {
+NColumnShard::EPortionGroup TGranuleMeta::GetCommittedPortionGroup(const TPortionInfo& portion) {
     YDB_LOG_VERIFY(portion.IsCommitted(),
         {"portion", portion.DebugString()});
     if (portion.HasRemoveSnapshot()) {
@@ -25,8 +23,6 @@ NColumnShard::EPortionGroup GetCommittedPortionGroup(const TPortionInfo& portion
     }
     return portion.GetPortionType() == EPortionType::Written ? NColumnShard::EPortionGroup::Written : NColumnShard::EPortionGroup::Compacted;
 }
-
-}   // namespace
 
 void TGranuleMeta::AppendPortion(const std::shared_ptr<TPortionInfo>& info) {
     YDB_LOG_TRACE("",
@@ -44,7 +40,7 @@ void TGranuleMeta::AppendPortion(const std::shared_ptr<TPortionInfo>& info) {
         {"portion", info->DebugString()});
 
     Portions.emplace(info->GetPortionId(), info);
-    OnAddCommittedPortion(info);
+    OnAddCommittedPortion(info, /*onLoad=*/false);
 
     if (IntervalTree) {
         IntervalTree->AddRange(
@@ -81,8 +77,12 @@ bool TGranuleMeta::ErasePortion(const ui64 portion) {
     return true;
 }
 
-void TGranuleMeta::OnAddCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool refreshCounters, const bool onLoad) {
-    DataStats->AddPortion(portion, GetCommittedPortionGroup(*portion));
+void TGranuleMeta::OnAddCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool onLoad) {
+    if (onLoad) {
+        DataStats->AddPortionOnLoad(portion, GetCommittedPortionGroup(*portion));
+    } else {
+        DataStats->AddPortionOnComplete(portion, GetCommittedPortionGroup(*portion));
+    }
     if (!portion->HasRemoveSnapshot()) {
         PortionsIndex.AddPortion(portion);
         // a loaded portion goes to the optimizer together with the rest of its batch
@@ -94,34 +94,38 @@ void TGranuleMeta::OnAddCommittedPortion(const std::shared_ptr<TPortionInfo>& po
             ActualizationIndex->AddPortion(portion, context);
         }
     }
-    if (refreshCounters) {
-        RefreshDataCounters();
+    if (!onLoad && LoadedKeyRanges.CoversAll()) {
+        PublishTableCounters();
     }
 }
 
-void TGranuleMeta::OnRemoveCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool refreshCounters) {
-    DataStats->RemovePortion(portion, GetCommittedPortionGroup(*portion));
+void TGranuleMeta::OnRemoveCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool publishCounters) {
+    DataStats->RemovePortionOnComplete(portion, GetCommittedPortionGroup(*portion));
     if (!portion->HasRemoveSnapshot()) {
         PortionsIndex.RemovePortion(portion);
         OptimizerPlanner->StartModificationGuard().RemovePortion(portion);
         ActualizationIndex->RemovePortion(portion);
     }
-    if (refreshCounters) {
-        RefreshDataCounters();
+    if (publishCounters && LoadedKeyRanges.CoversAll()) {
+        PublishTableCounters();
     }
 }
 
-void TGranuleMeta::RefreshDataCounters() const {
+void TGranuleMeta::PublishTableCounters() const {
     const NColumnShard::TDataStatsByStorage& stats = GetDataStats();
     Counters.OnPortionsDataRefresh(stats.GetWritten(), stats.GetCompacted());
 }
 
-void TGranuleMeta::AddInsertedPortion(const std::shared_ptr<TWrittenPortionInfo>& portion) {
+void TGranuleMeta::AddInsertedPortion(const std::shared_ptr<TWrittenPortionInfo>& portion, const bool onLoad) {
     YDB_LOG_VERIFY(!portion->IsCommitted(),
         {"portion", portion->DebugString()});
     YDB_LOG_VERIFY(InsertedPortions.emplace(portion->GetInsertWriteId(), portion).second);
     YDB_LOG_VERIFY(InsertedPortionsById.emplace(portion->GetPortionId(), portion).second);
-    DataStats->AddPortion(portion, NColumnShard::EPortionGroup::Uncommitted);
+    if (onLoad) {
+        DataStats->AddPortionOnLoad(portion, NColumnShard::EPortionGroup::Uncommitted);
+    } else {
+        DataStats->AddPortionOnComplete(portion, NColumnShard::EPortionGroup::Uncommitted);
+    }
 }
 
 std::shared_ptr<TWrittenPortionInfo> TGranuleMeta::ExtractInsertedPortion(const TInsertWriteId insertWriteId) {
@@ -131,7 +135,7 @@ std::shared_ptr<TWrittenPortionInfo> TGranuleMeta::ExtractInsertedPortion(const 
     InsertedPortions.erase(it);
     YDB_LOG_VERIFY(InsertedPortionsById.erase(portion->GetPortionId()));
     InsertedAccessors.erase(insertWriteId);
-    DataStats->RemovePortion(portion, NColumnShard::EPortionGroup::Uncommitted);
+    DataStats->RemovePortionOnComplete(portion, NColumnShard::EPortionGroup::Uncommitted);
     return portion;
 }
 
@@ -161,6 +165,7 @@ void TGranuleMeta::OnCompactionStarted() {
 TGranuleMeta::TGranuleMeta(const TInternalPathId pathId, const TGranulesStorage& owner, const NColumnShard::TGranuleDataCounters& counters,
     const TVersionedIndex& versionedIndex)
     : PathId(pathId)
+    , FirstPKColumnId(versionedIndex.GetLastSchema()->GetIndexInfo().GetPKFirstColumnId())
     , DataAccessorsManager(owner.GetDataAccessorsManager())
     , Counters(counters)
     , DataStats(owner.GetDataStats())
@@ -182,7 +187,7 @@ TGranuleMeta::TGranuleMeta(const TInternalPathId pathId, const TGranulesStorage&
 void TGranuleMeta::UpsertPortionOnLoad(const std::shared_ptr<TPortionInfo>& portion) {
     if (!portion->IsCommitted()) {
         YDB_LOG_VERIFY(!Portions.contains(portion->GetPortionId()));
-        AddInsertedPortion(std::static_pointer_cast<TWrittenPortionInfo>(portion));
+        AddInsertedPortion(std::static_pointer_cast<TWrittenPortionInfo>(portion), /*onLoad=*/true);
     } else {
         auto portionId = portion->GetPortionId();
         YDB_LOG_VERIFY(Portions.emplace(portionId, portion).second);
@@ -191,7 +196,7 @@ void TGranuleMeta::UpsertPortionOnLoad(const std::shared_ptr<TPortionInfo>& port
                 PortionIntervalTree::TPortionIntervalTree::TOwnedRange(PortionIntervalTree::TPositionView::FromPortionInfoIndexStart(portion),
                     true, PortionIntervalTree::TPositionView::FromPortionInfoIndexEnd(portion), true), portion);
         }
-        OnAddCommittedPortion(portion, /*refreshCounters=*/false, /*onLoad=*/true);
+        OnAddCommittedPortion(portion, /*onLoad=*/true);
     }
 }
 
@@ -223,8 +228,7 @@ std::vector<std::shared_ptr<TPortionInfo>> TGranuleMeta::AddPortionsLoadedInBatc
         }
     }
     AddPortionsToOptimizer(active);
-    LoadedKeyRanges = std::move(loadedKeyRanges);
-    RefreshDataCounters();
+    SetLoadedKeyRanges(std::move(loadedKeyRanges));
     return loaded;
 }
 
@@ -350,7 +354,7 @@ bool TGranuleMeta::TestingLoad(IDbWrapper& db, TColumnEngineForLogs& engine) {
 }
 
 void TGranuleMeta::InsertPortionOnExecute(
-    NTabletFlatExecutor::TTransactionContext& txc, const std::shared_ptr<TPortionDataAccessor>& portion, const ui64 firstPKColumnId) const {
+    NTabletFlatExecutor::TTransactionContext& txc, const std::shared_ptr<TPortionDataAccessor>& portion) const {
     auto portionImpl = portion->MutablePortionInfoPtr();
     if (portionImpl->GetPortionType() == EPortionType::Written) {
         auto writtenPortion = std::static_pointer_cast<TWrittenPortionInfo>(portionImpl);
@@ -359,14 +363,15 @@ void TGranuleMeta::InsertPortionOnExecute(
         YDB_LOG_VERIFY(!InsertedPortions.contains((TInsertWriteId)0));
     }
     TDbWrapper wrapper(txc.DB, nullptr);
-    portion->SaveToDatabase(wrapper, firstPKColumnId, false);
+    portion->SaveToDatabase(wrapper, FirstPKColumnId, false);
+    DataStats->AddPortionOnExecute(*portionImpl, NColumnShard::EPortionGroup::Uncommitted);
 }
 
 void TGranuleMeta::InsertPortionOnComplete(const std::shared_ptr<TPortionDataAccessor>& portion, IColumnEngine& /*engine*/) {
     auto portionImpl = portion->MutablePortionInfoPtr();
     YDB_LOG_VERIFY(portionImpl->GetPortionType() == EPortionType::Written);
     auto writtenPortion = std::static_pointer_cast<TWrittenPortionInfo>(portionImpl);
-    AddInsertedPortion(writtenPortion);
+    AddInsertedPortion(writtenPortion, /*onLoad=*/false);
     YDB_LOG_VERIFY(InsertedAccessors.emplace(writtenPortion->GetInsertWriteId(), portion).second);
     DataAccessorsManager->AddPortion(portion);
 }
@@ -378,14 +383,15 @@ void TGranuleMeta::CommitPortionOnExecute(
     it->second->SetCommitSnapshot(snapshot);
     TDbWrapper wrapper(txc.DB, nullptr);
     it->second->CommitToDatabase(wrapper);
+    DataStats->ChangeGroupOnExecute(*it->second, NColumnShard::EPortionGroup::Uncommitted, GetCommittedPortionGroup(*it->second));
 }
 
 void TGranuleMeta::CommitPortionOnComplete(const TInsertWriteId insertWriteId, IColumnEngine& engine) {
     static_cast<TColumnEngineForLogs&>(engine).AppendPortion(ExtractInsertedPortion(insertWriteId));
 }
 
-void TGranuleMeta::CommitImmediateOnExecute(NTabletFlatExecutor::TTransactionContext& txc, const TSnapshot& snapshot,
-    const TPortionDataAccessor& portion, const ui64 firstPKColumnId) const {
+void TGranuleMeta::CommitImmediateOnExecute(
+    NTabletFlatExecutor::TTransactionContext& txc, const TSnapshot& snapshot, const TPortionDataAccessor& portion) const {
     auto portionImpl = portion.MutablePortionInfoPtr();
     YDB_LOG_VERIFY(portionImpl->GetPortionType() == EPortionType::Written);
     auto writtenPortion = std::static_pointer_cast<TWrittenPortionInfo>(portionImpl);
@@ -393,7 +399,18 @@ void TGranuleMeta::CommitImmediateOnExecute(NTabletFlatExecutor::TTransactionCon
     YDB_LOG_VERIFY(!InsertedPortions.contains(writtenPortion->GetInsertWriteId()));
     writtenPortion->SetCommitSnapshot(snapshot);
     TDbWrapper wrapper(txc.DB, nullptr);
-    portion.SaveToDatabase(wrapper, firstPKColumnId, false);
+    portion.SaveToDatabase(wrapper, FirstPKColumnId, false);
+    DataStats->AddPortionOnExecute(*writtenPortion, GetCommittedPortionGroup(*writtenPortion));
+}
+
+void TGranuleMeta::AppendPortionOnExecute(IDbWrapper& db, const TPortionDataAccessor& portion) const {
+    portion.SaveToDatabase(db, FirstPKColumnId, false);
+    DataStats->AddPortionOnExecute(portion.GetPortionInfo(), GetCommittedPortionGroup(portion.GetPortionInfo()));
+}
+
+void TGranuleMeta::ErasePortionOnExecute(IDbWrapper& db, const TPortionDataAccessor& portion) const {
+    portion.RemoveFromDatabase(db);
+    DataStats->RemovePortionOnExecute(portion.GetPortionInfo(), GetCommittedPortionGroup(portion.GetPortionInfo()));
 }
 
 }   // namespace NKikimr::NOlap

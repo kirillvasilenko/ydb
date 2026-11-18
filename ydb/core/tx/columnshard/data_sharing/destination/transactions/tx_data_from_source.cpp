@@ -30,16 +30,16 @@ bool TTxDataFromSource::DoExecute(NTabletFlatExecutor::TTransactionContext& txc,
         }
         dbWrapper.WriteCounter(TColumnEngineForLogs::LAST_PORTION, *lastPortionPtr);
     }
-    auto schemaPtr = index.GetVersionedIndex().GetLastSchema();
     THashMap<TString, THashSet<NBlobCache::TUnifiedBlobId>> sharedBlobIds;
     for (auto&& i : PortionsByPathId) {
         for (auto&& p : i.second.GetPortions()) {
-            p->SaveToDatabase(dbWrapper, schemaPtr->GetIndexInfo().GetPKFirstColumnId(), false);
+            index.GetGranuleVerified(p->GetPortionInfo().GetPathId()).AppendPortionOnExecute(dbWrapper, *p);
         }
     }
     db.Table<Schema::DestinationSessions>()
         .Key(Session->GetSessionId())
         .Update(NIceDb::TUpdate<Schema::DestinationSessions::Cursor>(Session->SerializeCursorToProto().SerializeAsString()));
+    index.GetDataStats()->PersistEssentials(dbWrapper);
     return true;
 }
 

@@ -2,6 +2,7 @@ LIBRARY()
 
 SRCS(
     data_stats_by_storage.cpp
+    essential_stats.cpp
     shard_data_stats.cpp
 )
 
@@ -12,6 +13,7 @@ PEERDIR(
     ydb/core/tx/columnshard/common
     ydb/core/tx/columnshard/counters
     ydb/core/tx/columnshard/engines/portions
+    ydb/core/tx/columnshard/engines/protos
 )
 
 END()

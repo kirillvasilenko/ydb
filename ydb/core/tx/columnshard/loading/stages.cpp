@@ -12,6 +12,16 @@
 
 namespace NKikimr::NColumnShard::NLoading {
 
+bool TEssentialStatsInitializer::DoExecute(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& /*ctx*/) {
+    NOlap::TDbWrapper db(txc.DB, nullptr);
+    return Self->DataStats->LoadEssentials(db);
+}
+
+bool TEssentialStatsInitializer::DoPrecharge(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& /*ctx*/) {
+    NIceDb::TNiceDb db(txc.DB);
+    return Schema::Precharge<Schema::EssentialStats>(db, txc.DB.GetScheme());
+}
+
 bool TTxControllerInitializer::DoExecute(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& /*ctx*/) {
     auto localTxController = std::make_unique<TTxController>(*Self);
     if (!localTxController->Load(txc)) {

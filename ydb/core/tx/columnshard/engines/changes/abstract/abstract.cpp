@@ -54,6 +54,7 @@ void TColumnEngineChanges::WriteIndexOnExecute(NColumnShard::TColumnShard* self,
     YDB_LOG_VERIFY(StateGuard.GetStage() >= NChanges::EStage::Compiled);
 
     DoWriteIndexOnExecute(self, context);
+    context.EngineLogs.GetDataStats()->PersistEssentials(context.DBWrapper);
     SetStage(NChanges::EStage::Written);
 }
 
