@@ -77,6 +77,7 @@ enum class ENormalizerSequentialId: ui32 {
     RestoreAppearanceSnapshot,
     CleanOrphanedOperations,
     CleanStaleBackupTransactions,
+    PrepareDeferredPortionLoading,
 
     MAX
 };

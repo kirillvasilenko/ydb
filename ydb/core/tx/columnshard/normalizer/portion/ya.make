@@ -19,6 +19,7 @@ SRCS(
     GLOBAL copy_blob_ids_to_v2.cpp
     GLOBAL leaked_blobs.cpp
     GLOBAL portion.cpp
+    GLOBAL prepare_deferred_portion_loading.cpp
     GLOBAL restore_appearance_snapshot.cpp
     GLOBAL restore_v1_chunks.cpp
     GLOBAL restore_v2_chunks.cpp
