@@ -520,6 +520,8 @@ void UpdateLocalDbTableRow(
 std::vector<NKikimrTxColumnShard::TSchemaPresetVersionInfo> ReadSchemaPresetVersions(TTestBasicRuntime& runtime, ui64 tabletId);
 
 ui64 CountTxInfoRows(TTestBasicRuntime& runtime, ui64 tabletId = TTestTxConfig::TxTablet0);
+// nullopt when the counter row does not exist
+std::optional<ui64> ReadIndexCounter(TTestBasicRuntime& runtime, ui64 tabletId, ui32 counterId);
 
 void VerifyNoBackupOrRestoreArtifacts(
     TTestBasicRuntime& runtime, const NYDBTest::NColumnShard::TController* csController, ui64 tabletId = TTestTxConfig::TxTablet0);

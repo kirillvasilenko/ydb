@@ -4,6 +4,7 @@
 #include <ydb/core/tx/columnshard/engines/db_wrapper.h>
 #include <ydb/core/tx/columnshard/engines/index_portions_by_last_key.h>
 #include <ydb/core/tx/columnshard/engines/portions/constructor_portion.h>
+#include <ydb/core/tx/columnshard/engines/portions/written.h>
 #include <ydb/core/tx/columnshard/tables_manager.h>
 
 namespace NKikimr::NOlap::NPrepareDeferredPortionLoading {
@@ -58,6 +59,26 @@ public:
     }
 };
 
+class TSaveLastInsertWriteId: public INormalizerChanges {
+private:
+    const ui64 LastInsertWriteId;
+
+public:
+    TSaveLastInsertWriteId(const ui64 lastInsertWriteId)
+        : LastInsertWriteId(lastInsertWriteId)
+    {
+    }
+
+    virtual bool ApplyOnExecute(NTabletFlatExecutor::TTransactionContext& txc, const TNormalizationController&) const override {
+        TDbWrapper(txc.DB, nullptr).WriteCounter(TColumnEngineForLogs::LAST_INSERT_WRITE_ID, LastInsertWriteId);
+        return true;
+    }
+
+    virtual ui64 GetSize() const override {
+        return 1;
+    }
+};
+
 std::vector<INormalizerTask::TPtr> BuildIndexTableTasks(
     const std::vector<TNameTypeInfo>& pkColumns, const std::vector<TPortionInfo::TPtr>& portions) {
     std::vector<INormalizerTask::TPtr> tasks;
@@ -68,6 +89,24 @@ std::vector<INormalizerTask::TPtr> BuildIndexTableTasks(
             std::make_shared<TFillIndexTable>(std::vector<TPortionInfo::TPtr>(portions.begin() + begin, portions.begin() + end))));
     }
     return tasks;
+}
+
+ui64 GetMaxInsertWriteId(const std::vector<TPortionInfo::TPtr>& portions) {
+    ui64 result = 0;
+    for (const auto& portion : portions) {
+        if (portion->GetPortionType() == EPortionType::Written) {
+            result = std::max(result, (ui64) static_cast<const TWrittenPortionInfo&>(*portion).GetInsertWriteId());
+        }
+    }
+    return result;
+}
+
+bool LoadLastInsertWriteId(NTabletFlatExecutor::TTransactionContext& txc, ui64& lastInsertWriteId) {
+    return TDbWrapper(txc.DB, nullptr).LoadCounters([&](const ui32 id, const ui64 value) {
+        if (id == TColumnEngineForLogs::LAST_INSERT_WRITE_ID) {
+            lastInsertWriteId = value;
+        }
+    });
 }
 
 bool LoadPortions(NTabletFlatExecutor::TTransactionContext& txc, const TVersionedIndex& versionedIndex,
@@ -106,7 +145,15 @@ TConclusion<std::vector<INormalizerTask::TPtr>> TNormalizer::DoInit(
     if (!LoadPortions(txc, versionedIndex, DsGroupSelector, portions)) {
         return TConclusionStatus::Fail("Not ready");
     }
-    return BuildIndexTableTasks(versionedIndex.GetLastSchema()->GetIndexInfo().GetPrimaryKeyColumns(), portions);
+    ui64 lastInsertWriteId = 0;
+    if (!LoadLastInsertWriteId(txc, lastInsertWriteId)) {
+        return TConclusionStatus::Fail("Not ready");
+    }
+
+    auto tasks = BuildIndexTableTasks(versionedIndex.GetLastSchema()->GetIndexInfo().GetPrimaryKeyColumns(), portions);
+    tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(
+        std::make_shared<TSaveLastInsertWriteId>(std::max(lastInsertWriteId, GetMaxInsertWriteId(portions)))));
+    return tasks;
 }
 
 }   // namespace NKikimr::NOlap::NPrepareDeferredPortionLoading

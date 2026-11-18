@@ -1,5 +1,6 @@
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/tx/columnshard/columnshard_schema.h>
+#include <ydb/core/tx/columnshard/engines/column_engine_logs.h>
 #include <ydb/core/tx/columnshard/hooks/testing/controller.h>
 #include <ydb/core/tx/columnshard/normalizer/abstract/abstract.h>
 #include <ydb/core/tx/columnshard/test_helper/columnshard_ut_common.h>
@@ -66,8 +67,34 @@ public:
         RebootTablet(Runtime, TTestTxConfig::TxTablet0, Sender);
     }
 
+    // what a binary without the normalizer saves: the normalizers up to the one before it are done
+    void RunNormalizerAgainOnReboot() {
+        UpdateLocalDbTableRow(Runtime, TTestTxConfig::TxTablet0, "Value",
+            Sprintf("'('('Id (Uint32 '%" PRIu32 ")))", static_cast<ui32>(Schema::EValueIds::LastNormalizerSequentialId)),
+            Sprintf("'('('Digit (Uint64 '%" PRIu64 ")))", static_cast<ui64>(NOlap::ENormalizerSequentialId::PrepareDeferredPortionLoading) - 1));
+    }
+
     ui64 AssertIndexMatchesPortions() {
         return NTxUT::AssertIndexMatchesPortions(Runtime, TTestTxConfig::TxTablet0, Table.Pk);
+    }
+
+    std::optional<ui64> ReadLastInsertWriteId() {
+        return ReadIndexCounter(Runtime, TTestTxConfig::TxTablet0, NOlap::TColumnEngineForLogs::LAST_INSERT_WRITE_ID);
+    }
+
+    void SetLastInsertWriteId(const ui64 value) {
+        UpdateLocalDbTableRow(Runtime, TTestTxConfig::TxTablet0, "IndexCounters", LastInsertWriteIdKey(),
+            Sprintf("'('('ValueUI64 (Uint64 '%" PRIu64 ")))", value));
+    }
+
+    void EraseLastInsertWriteId() {
+        EraseLocalDbTableRow(Runtime, TTestTxConfig::TxTablet0, "IndexCounters", LastInsertWriteIdKey());
+    }
+
+private:
+    static TString LastInsertWriteIdKey() {
+        return Sprintf(
+            "'('('Index (Uint32 '0)) '('Counter (Uint32 '%" PRIu32 ")))", static_cast<ui32>(NOlap::TColumnEngineForLogs::LAST_INSERT_WRITE_ID));
     }
 };
 
@@ -96,12 +123,36 @@ Y_UNIT_TEST_SUITE(TPrepareDeferredPortionLoading) {
         UpdateLocalDbTableRow(shard.Runtime, TTestTxConfig::TxTablet0, "IndexPortionsByLastKey",
             "'('('PathId (Uint64 '1)) '('LastKey_timestamp (Timestamp '1)) '('LastKey_resource_type (Utf8 'a)) "
             "'('LastKey_resource_id (Utf8 'a)) '('LastKey_uid (Utf8 'a)) '('PortionId (Uint64 '999999)))", "'()");
-        // what an old binary saves: the normalizers up to the one before ours are done
-        UpdateLocalDbTableRow(shard.Runtime, TTestTxConfig::TxTablet0, "Value",
-            Sprintf("'('('Id (Uint32 '%" PRIu32 ")))", static_cast<ui32>(Schema::EValueIds::LastNormalizerSequentialId)),
-            Sprintf("'('('Digit (Uint64 '%" PRIu64 ")))", static_cast<ui64>(NOlap::ENormalizerSequentialId::PrepareDeferredPortionLoading) - 1));
+        shard.RunNormalizerAgainOnReboot();
         shard.Reboot();
         UNIT_ASSERT_VALUES_EQUAL(shard.AssertIndexMatchesPortions(), 3);
+    }
+
+    Y_UNIT_TEST(RestoresLastInsertWriteIdOfShardWithoutIt) {
+        TTestShard shard;
+        for (ui32 i = 0; i < 3; ++i) {
+            shard.WriteAndCommit();
+        }
+        const std::optional<ui64> lastInsertWriteId = shard.ReadLastInsertWriteId();
+        UNIT_ASSERT(lastInsertWriteId);
+
+        shard.EraseLastInsertWriteId();
+        shard.RunNormalizerAgainOnReboot();
+        shard.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(shard.ReadLastInsertWriteId().value_or(0), *lastInsertWriteId);
+    }
+
+    Y_UNIT_TEST(KeepsLastInsertWriteIdAboveThePortions) {
+        TTestShard shard;
+        for (ui32 i = 0; i < 3; ++i) {
+            shard.WriteAndCommit();
+        }
+
+        // the portions with the highest ids may be gone, compacted away
+        shard.SetLastInsertWriteId(1000);
+        shard.RunNormalizerAgainOnReboot();
+        shard.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(shard.ReadLastInsertWriteId().value_or(0), 1000);
     }
 }
 

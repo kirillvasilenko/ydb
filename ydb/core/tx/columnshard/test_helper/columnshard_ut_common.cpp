@@ -687,6 +687,21 @@ ui64 CountTxInfoRows(TTestBasicRuntime& runtime, ui64 tabletId) {
     return NClient::TValue::Create(result)[0]["List"].Size();
 }
 
+std::optional<ui64> ReadIndexCounter(TTestBasicRuntime& runtime, ui64 tabletId, ui32 counterId) {
+    const auto result = LocalMiniKQL(runtime, tabletId, Sprintf(R"(
+        (
+            (let key '('('Index (Uint32 '0)) '('Counter (Uint32 '%u))))
+            (let select '('ValueUI64))
+            (return (AsList (SetResult 'Result (SelectRow 'IndexCounters key select))))
+        )
+    )", counterId));
+    const auto& row = result.GetValue().GetStruct(0).GetOptional();
+    if (!row.HasOptional()) {
+        return std::nullopt;
+    }
+    return row.GetOptional().GetStruct(0).GetOptional().GetUint64();
+}
+
 ui64 CountBackgroundSessionsRows(TTestBasicRuntime& runtime, ui64 tabletId) {
     const auto result = LocalMiniKQL(runtime, tabletId, R"(
         (
