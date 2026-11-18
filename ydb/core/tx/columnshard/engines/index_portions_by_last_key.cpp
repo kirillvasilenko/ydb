@@ -87,6 +87,11 @@ void TIndexPortionsByLastKey::Create(NTable::TDatabase& db, const std::vector<st
     alter.AddColumnToKey(TableId, PortionIdTag);
 }
 
+void TIndexPortionsByLastKey::Truncate(NTable::TDatabase& db) {
+    YDB_LOG_VERIFY(Exists(db));
+    db.Truncate(TableId);
+}
+
 void TIndexPortionsByLastKey::Upsert(NTable::TDatabase& db, const TPortionInfo& portion) {
     const auto* info = GetTableInfo(db);
     if (!info) {

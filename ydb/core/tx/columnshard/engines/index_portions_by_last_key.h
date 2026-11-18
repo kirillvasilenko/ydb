@@ -17,6 +17,7 @@ class TIndexPortionsByLastKey {
 public:
     static bool Exists(const NTable::TDatabase& db);
     static void Create(NTable::TDatabase& db, const std::vector<std::pair<TString, NScheme::TTypeInfo>>& pkColumns);
+    static void Truncate(NTable::TDatabase& db);
 
     // Upsert and Erase do nothing while the table does not exist
     static void Upsert(NTable::TDatabase& db, const TPortionInfo& portion);
