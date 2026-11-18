@@ -15,7 +15,6 @@ SRCS(
     splitter.cpp
     portions.cpp
     writes_monitor.cpp
-    portion_index.cpp
     duplicate_filtering.cpp
     error_collector.cpp
     startup_timeline.cpp
@@ -23,7 +22,6 @@ SRCS(
 
 PEERDIR(
     library/cpp/monlib/dynamic_counters
-    ydb/core/tx/columnshard/counters/aggregation
     ydb/library/signals
     ydb/core/base
     ydb/library/actors/core
