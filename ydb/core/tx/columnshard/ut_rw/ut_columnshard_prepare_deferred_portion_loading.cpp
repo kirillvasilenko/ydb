@@ -1,4 +1,6 @@
+#include <ydb/core/protos/tx_columnshard.pb.h>
 #include <ydb/core/tx/columnshard/columnshard.h>
+#include <ydb/core/tx/columnshard/columnshard_impl.h>
 #include <ydb/core/tx/columnshard/columnshard_schema.h>
 #include <ydb/core/tx/columnshard/engines/column_engine_logs.h>
 #include <ydb/core/tx/columnshard/hooks/testing/controller.h>
@@ -33,6 +35,27 @@ public:
     }
 };
 
+// what an operation written before C5 looks like
+class TClearOperationPortionIds: public NYDBTest::ILocalDBModifier {
+public:
+    void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {
+        NIceDb::TNiceDb db(txc.DB);
+        std::vector<std::pair<ui64, NKikimrTxColumnShard::TInternalOperationData>> operations;
+        auto rowset = db.Table<Schema::Operations>().Select();
+        UNIT_ASSERT(rowset.IsReady());
+        while (!rowset.EndOfSet()) {
+            auto& [writeId, metadata] = operations.emplace_back();
+            writeId = rowset.GetValue<Schema::Operations::WriteId>();
+            UNIT_ASSERT(metadata.ParseFromString(rowset.GetValue<Schema::Operations::Metadata>()));
+            UNIT_ASSERT(rowset.Next());
+        }
+        for (auto& [writeId, metadata] : operations) {
+            metadata.ClearPortionIds();
+            db.Table<Schema::Operations>().Key(writeId).Update(NIceDb::TUpdate<Schema::Operations::Metadata>(metadata.SerializeAsString()));
+        }
+    }
+};
+
 class TTestShard {
 public:
     NYDBTest::TControllers::TGuard<TModifierController> Controller = NYDBTest::TControllers::RegisterCSControllerGuard<TModifierController>();
@@ -43,6 +66,8 @@ public:
 private:
     ui64 WriteId = 0;
     ui64 TxId = 100;
+    // the default lock of WriteData
+    static constexpr ui64 LockId = 1;
 
 public:
     TTestShard() {
@@ -61,6 +86,20 @@ public:
         UNIT_ASSERT(WriteData(Runtime, Sender, WriteId++, TableId, MakeTestBlob({ 0, 1000 }, Table.Schema), Table.Schema, true, &writeIds));
         PlanCommit(Runtime, Sender, ProposeCommit(Runtime, Sender, TxId, writeIds), TxId);
         ++TxId;
+    }
+
+    // proposed, so that CleanOrphanedOperations keeps it, and never planned
+    void WriteAndPropose() {
+        std::vector<ui64> writeIds;
+        UNIT_ASSERT(WriteData(Runtime, Sender, WriteId++, TableId, MakeTestBlob({ 0, 1000 }, Table.Schema), Table.Schema, true, &writeIds));
+        Y_UNUSED(ProposeCommit(Runtime, Sender, TxId++, writeIds, LockId));
+    }
+
+    std::vector<ui64> GetLockPortionIds() {
+        const auto* lock = Controller->GetTheOnlyShard()->GetOperationsManager().GetLockOptional(LockId);
+        UNIT_ASSERT(lock);
+        UNIT_ASSERT_VALUES_EQUAL(lock->GetWriteOperations().size(), 1);
+        return lock->GetWriteOperations().front()->GetPortionIds();
     }
 
     void Reboot() {
@@ -153,6 +192,17 @@ Y_UNIT_TEST_SUITE(TPrepareDeferredPortionLoading) {
         shard.RunNormalizerAgainOnReboot();
         shard.Reboot();
         UNIT_ASSERT_VALUES_EQUAL(shard.ReadLastInsertWriteId().value_or(0), 1000);
+    }
+
+    Y_UNIT_TEST(FillsPortionIdsOfOperationsWithoutThem) {
+        TTestShard shard;
+        shard.WriteAndPropose();
+        const std::vector<ui64> portionIds = shard.GetLockPortionIds();
+        UNIT_ASSERT(!portionIds.empty());
+
+        shard.Controller->Modifier = std::make_shared<TClearOperationPortionIds>();
+        shard.Reboot();
+        UNIT_ASSERT(shard.GetLockPortionIds() == portionIds);
     }
 }
 
