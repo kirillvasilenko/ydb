@@ -11,6 +11,10 @@
 #include <ydb/core/tx/data_events/payload_helper.h>
 #include <ydb/core/tx/long_tx_service/public/events.h>
 
+#include <yql/essentials/ast/yql_ast_escaping.h>
+
+#include <inttypes.h>
+
 namespace NKikimr {
 
 using namespace NColumnShard;
@@ -18,39 +22,15 @@ using namespace NTxUT;
 
 namespace {
 
-class TDefaultTestsController: public NKikimr::NYDBTest::NColumnShard::TController {
-public:
-    NYDBTest::ILocalDBModifier::TPtr LocalDBModifier;
-
-    NYDBTest::ILocalDBModifier::TPtr BuildLocalBaseModifier() const override {
-        return LocalDBModifier;
-    }
-};
+using TDefaultTestsController = NKikimr::NYDBTest::NColumnShard::TController;
 
 const TInternalPathId TableWithoutPortions = TInternalPathId::FromRawValue(999);
 
-// the rows of a binary that counted wrong: the row of the table is missing, and a table without portions has one
-class TWrongEssentialStats: public NYDBTest::ILocalDBModifier {
-public:
-    void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {
-        NIceDb::TNiceDb db(txc.DB);
-        std::vector<std::pair<ui64, TString>> keys;
-        auto rowset = db.Table<Schema::EssentialStats>().Select();
-        UNIT_ASSERT(rowset.IsReady());
-        while (!rowset.EndOfSet()) {
-            keys.emplace_back(rowset.GetValue<Schema::EssentialStats::PathId>(), rowset.GetValue<Schema::EssentialStats::StorageId>());
-            UNIT_ASSERT(rowset.Next());
-        }
-        for (const auto& [pathId, storageId] : keys) {
-            db.Table<Schema::EssentialStats>().Key(pathId, storageId).Delete();
-        }
-        NKikimrTxColumnShard::TEssentialStats stats;
-        stats.SetRows(5);
-        db.Table<Schema::EssentialStats>()
-            .Key(TableWithoutPortions.GetRawValue(), NOlap::NBlobOperations::TGlobal::DefaultStorageId)
-            .Update(NIceDb::TUpdate<Schema::EssentialStats::Stats>(stats.SerializeAsString()));
-    }
-};
+TString EscapeMiniKQLString(TStringBuf value) {
+    TStringStream escaped;
+    NYql::EscapeArbitraryAtom(value, '"', &escaped);
+    return escaped.Str();
+}
 
 const ui64 TableId = 1;
 const ui64 LockId = 7;
@@ -127,6 +107,23 @@ public:
 
     void Reboot() {
         RebootTablet(Runtime, TTestTxConfig::TxTablet0, Sender);
+    }
+
+    // a binary that counted wrong: no row for the table, a row for a table without portions; written into the running shard,
+    // since with a modifier every normalizer runs and fixes the rows before the recount
+    void WriteWrongEssentialStats() {
+        const TString& storageId = NOlap::NBlobOperations::TGlobal::DefaultStorageId;
+        EraseLocalDbTableRow(
+            Runtime, TTestTxConfig::TxTablet0, "EssentialStats", EssentialStatsKey(Engine().GetTables().begin()->first, storageId));
+        NKikimrTxColumnShard::TEssentialStats stats;
+        stats.SetRows(5);
+        UpdateLocalDbTableRow(Runtime, TTestTxConfig::TxTablet0, "EssentialStats", EssentialStatsKey(TableWithoutPortions, storageId),
+            Sprintf("'('('Stats (String '%s)))", EscapeMiniKQLString(stats.SerializeAsString()).c_str()));
+    }
+
+    static TString EssentialStatsKey(const TInternalPathId pathId, const TString& storageId) {
+        return Sprintf(
+            "'('('PathId (Uint64 '%" PRIu64 ")) '('StorageId (String '%s)))", pathId.GetRawValue(), EscapeMiniKQLString(storageId).c_str());
     }
 
     void AllowBatches(const std::optional<ui32> limit) {
@@ -479,7 +476,7 @@ Y_UNIT_TEST_SUITE(TColumnShardDeferredPortionLoading) {
 
     Y_UNIT_TEST(FullLoadRecalculatesWrongEssentialStats) {
         TShardWithPortions shard({ .DeferredLoading = false });
-        shard.Controller->LocalDBModifier = std::make_shared<TWrongEssentialStats>();
+        shard.WriteWrongEssentialStats();
         shard.Reboot();
         UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().GetRowCount(), 300);
         UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats(TableWithoutPortions).GetRowCount(), 0);
@@ -488,11 +485,10 @@ Y_UNIT_TEST_SUITE(TColumnShardDeferredPortionLoading) {
     // a write while loading reaches the rows and the group stats in the same Execute, so the recalculation keeps it
     Y_UNIT_TEST(AllLoadedRecalculatesWrongEssentialStats) {
         TShardWithPortions shard;
-        shard.Controller->LocalDBModifier = std::make_shared<TWrongEssentialStats>();
+        shard.WriteWrongEssentialStats();
         shard.AllowBatches(1);
         shard.Reboot();
         shard.WaitBatchesLoaded(1);
-        shard.Controller->LocalDBModifier = nullptr;
         shard.WriteAndCommit(TableId, { 1000, 1010 });
         UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats().GetRowCount(), 10);
         UNIT_ASSERT_VALUES_EQUAL(shard.GetTableStats(TableWithoutPortions).GetRowCount(), 5);

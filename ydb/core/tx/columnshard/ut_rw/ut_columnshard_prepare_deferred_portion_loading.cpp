@@ -1,8 +1,11 @@
+#include <ydb/core/protos/table_stats.pb.h>
 #include <ydb/core/protos/tx_columnshard.pb.h>
+#include <ydb/core/tx/columnshard/blobs_action/common/const.h>
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/tx/columnshard/columnshard_impl.h>
 #include <ydb/core/tx/columnshard/columnshard_schema.h>
 #include <ydb/core/tx/columnshard/engines/column_engine_logs.h>
+#include <ydb/core/tx/columnshard/engines/protos/essential_stats.pb.h>
 #include <ydb/core/tx/columnshard/hooks/testing/controller.h>
 #include <ydb/core/tx/columnshard/normalizer/abstract/abstract.h>
 #include <ydb/core/tx/columnshard/test_helper/columnshard_ut_common.h>
@@ -17,6 +20,7 @@ using namespace NTxUT;
 namespace {
 
 const ui64 TableId = 1;
+const TInternalPathId TableWithoutPortions = TInternalPathId::FromRawValue(999);
 
 class TModifierController: public NYDBTest::NColumnShard::TController {
 public:
@@ -32,6 +36,37 @@ class TDropIndexTable: public NYDBTest::ILocalDBModifier {
 public:
     void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {
         txc.DB.Alter().DropTable(Schema::PortionsByLastKeyTableId);
+    }
+};
+
+// what a shard written before C10 looks like
+class TEraseEssentialStats: public NYDBTest::ILocalDBModifier {
+public:
+    void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {
+        NIceDb::TNiceDb db(txc.DB);
+        std::vector<std::pair<ui64, TString>> keys;
+        auto rowset = db.Table<Schema::EssentialStats>().Select();
+        UNIT_ASSERT(rowset.IsReady());
+        while (!rowset.EndOfSet()) {
+            keys.emplace_back(rowset.GetValue<Schema::EssentialStats::PathId>(), rowset.GetValue<Schema::EssentialStats::StorageId>());
+            UNIT_ASSERT(rowset.Next());
+        }
+        for (const auto& [pathId, storageId] : keys) {
+            db.Table<Schema::EssentialStats>().Key(pathId, storageId).Delete();
+        }
+    }
+};
+
+// a row an old binary leaves behind: its table has no portions any more
+class TAddEssentialStatsOfTableWithoutPortions: public NYDBTest::ILocalDBModifier {
+public:
+    void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {
+        NKikimrTxColumnShard::TEssentialStats stats;
+        stats.SetRows(5);
+        NIceDb::TNiceDb(txc.DB)
+            .Table<Schema::EssentialStats>()
+            .Key(TableWithoutPortions.GetRawValue(), NOlap::NBlobOperations::TGlobal::DefaultStorageId)
+            .Update(NIceDb::TUpdate<Schema::EssentialStats::Stats>(stats.SerializeAsString()));
     }
 };
 
@@ -70,9 +105,10 @@ private:
     static constexpr ui64 LockId = 1;
 
 public:
-    TTestShard() {
+    explicit TTestShard(const bool deferredLoading = false) {
         Controller->DisableBackground(NYDBTest::ICSController::EBackground::Compaction);
         TTester::Setup(Runtime);
+        Runtime.GetAppData().ColumnShardConfig.MutableDeferredPortionLoadingSettings()->SetEnabled(deferredLoading);
         Sender = Runtime.AllocateEdgeActor();
         CreateTestBootstrapper(Runtime, CreateTestTabletInfo(TTestTxConfig::TxTablet0, TTabletTypes::ColumnShard), &CreateColumnShard);
         TDispatchOptions options;
@@ -100,6 +136,18 @@ public:
         UNIT_ASSERT(lock);
         UNIT_ASSERT_VALUES_EQUAL(lock->GetWriteOperations().size(), 1);
         return lock->GetWriteOperations().front()->GetPortionIds();
+    }
+
+    // with deferred loading and no batches, nothing recounts the essentials after the normalizer
+    void HoldPortionBatches() {
+        Controller->SetPortionBatchesLimit(0);
+    }
+
+    NKikimrTableStats::TTableStats GetTableEssentials(const std::optional<TInternalPathId> pathId = std::nullopt) {
+        const auto& engine = Controller->GetTheOnlyShard()->GetIndexAs<NOlap::TColumnEngineForLogs>();
+        NKikimrTableStats::TTableStats stats;
+        engine.GetDataStats()->FillTableEssentials(pathId.value_or(engine.GetTables().begin()->first), stats);
+        return stats;
     }
 
     void Reboot() {
@@ -203,6 +251,34 @@ Y_UNIT_TEST_SUITE(TPrepareDeferredPortionLoading) {
         shard.Controller->Modifier = std::make_shared<TClearOperationPortionIds>();
         shard.Reboot();
         UNIT_ASSERT(shard.GetLockPortionIds() == portionIds);
+    }
+
+    Y_UNIT_TEST(RestoresEssentialStatsOfShardWithoutThem) {
+        TTestShard shard(/*deferredLoading=*/true);
+        for (ui32 i = 0; i < 3; ++i) {
+            shard.WriteAndCommit();
+        }
+        const auto essentials = shard.GetTableEssentials();
+        UNIT_ASSERT_GT(essentials.GetRowCount(), 0);
+
+        shard.HoldPortionBatches();
+        shard.Controller->Modifier = std::make_shared<TEraseEssentialStats>();
+        shard.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableEssentials().ShortDebugString(), essentials.ShortDebugString());
+    }
+
+    Y_UNIT_TEST(ErasesEssentialStatsOfTableWithoutPortions) {
+        TTestShard shard(/*deferredLoading=*/true);
+        for (ui32 i = 0; i < 3; ++i) {
+            shard.WriteAndCommit();
+        }
+        const auto essentials = shard.GetTableEssentials();
+
+        shard.HoldPortionBatches();
+        shard.Controller->Modifier = std::make_shared<TAddEssentialStatsOfTableWithoutPortions>();
+        shard.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableEssentials(TableWithoutPortions).GetRowCount(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(shard.GetTableEssentials().ShortDebugString(), essentials.ShortDebugString());
     }
 }
 

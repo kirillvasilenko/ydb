@@ -52,7 +52,6 @@ private:
     NGranule::NPortionsIndex::TPortionsIndex PortionsIndex;
     TLoadedKeyRanges LoadedKeyRanges = TLoadedKeyRanges::BuildNothing();
 
-    static NColumnShard::EPortionGroup GetCommittedPortionGroup(const TPortionInfo& portion);
     void OnAddCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool onLoad);
     void OnRemoveCommittedPortion(const std::shared_ptr<TPortionInfo>& portion, const bool publishCounters = true);
     void AddInsertedPortion(const std::shared_ptr<TWrittenPortionInfo>& portion, const bool onLoad);
@@ -74,6 +73,8 @@ private:
     }
 
 public:
+    static NColumnShard::EPortionGroup GetCommittedPortionGroup(const TPortionInfo& portion);
+
     std::vector<TCSMetadataRequest> CollectMetadataRequests() {
         return ActualizationIndex->CollectMetadataRequests(Portions);
     }

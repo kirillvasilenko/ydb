@@ -7,6 +7,8 @@
 #include <ydb/core/tx/columnshard/engines/index_portions_by_last_key.h>
 #include <ydb/core/tx/columnshard/engines/portions/constructor_portion.h>
 #include <ydb/core/tx/columnshard/engines/portions/written.h>
+#include <ydb/core/tx/columnshard/engines/storage/data_stats/shard_data_stats.h>
+#include <ydb/core/tx/columnshard/engines/storage/granule/granule.h>
 #include <ydb/core/tx/columnshard/tables_manager.h>
 
 namespace NKikimr::NOlap::NPrepareDeferredPortionLoading {
@@ -112,6 +114,39 @@ public:
     }
 };
 
+class TTruncateEssentialStats: public INormalizerChanges {
+public:
+    virtual bool ApplyOnExecute(NTabletFlatExecutor::TTransactionContext& txc, const TNormalizationController&) const override {
+        txc.DB.Truncate(NColumnShard::Schema::EssentialStats::TableId);
+        return true;
+    }
+
+    virtual ui64 GetSize() const override {
+        return 1;
+    }
+};
+
+class TRecalculateEssentials: public INormalizerChanges {
+private:
+    const std::shared_ptr<NColumnShard::TShardDataStats> DataStats;
+
+public:
+    TRecalculateEssentials(const std::shared_ptr<NColumnShard::TShardDataStats>& dataStats)
+        : DataStats(dataStats)
+    {
+    }
+
+    virtual bool ApplyOnExecute(NTabletFlatExecutor::TTransactionContext& txc, const TNormalizationController&) const override {
+        TDbWrapper wrapper(txc.DB, nullptr);
+        DataStats->RecalculateEssentials(wrapper);
+        return true;
+    }
+
+    virtual ui64 GetSize() const override {
+        return 1;
+    }
+};
+
 template <class TChanges, class TRow>
 void AddTasks(std::vector<INormalizerTask::TPtr>& tasks, const std::vector<TRow>& rows) {
     for (ui64 begin = 0; begin < rows.size(); begin += RowsPerTask) {
@@ -189,6 +224,13 @@ bool LoadOperations(NTabletFlatExecutor::TTransactionContext& txc, std::vector<T
     return true;
 }
 
+void AddPortionsToStats(const std::vector<TPortionInfo::TPtr>& portions, NColumnShard::TShardDataStats& dataStats) {
+    for (const auto& portion : portions) {
+        dataStats.AddPortionOnLoad(
+            portion, portion->IsCommitted() ? TGranuleMeta::GetCommittedPortionGroup(*portion) : NColumnShard::EPortionGroup::Uncommitted);
+    }
+}
+
 bool LoadPortions(NTabletFlatExecutor::TTransactionContext& txc, const TVersionedIndex& versionedIndex,
     const IBlobGroupSelector& dsGroupSelector, std::vector<TPortionInfo::TPtr>& portions) {
     TDbWrapper wrapper(txc.DB, nullptr);
@@ -214,8 +256,8 @@ TConclusion<std::vector<INormalizerTask::TPtr>> TNormalizer::DoInit(
         return TConclusionStatus::Fail("Not ready");
     }
 
-    TTablesManager tablesManager(controller.GetStoragesManager(), controller.GetDataAccessorsManager(),
-        std::make_shared<TShardDataStats>(controller.GetStoragesManager(), 0), 0);
+    const auto dataStats = std::make_shared<TShardDataStats>(controller.GetStoragesManager(), TabletId);
+    TTablesManager tablesManager(controller.GetStoragesManager(), controller.GetDataAccessorsManager(), dataStats, 0);
     if (!tablesManager.InitFromDB(db, nullptr)) {
         return TConclusionStatus::Fail("Not ready");
     }
@@ -242,6 +284,9 @@ TConclusion<std::vector<INormalizerTask::TPtr>> TNormalizer::DoInit(
         std::make_shared<TSaveLastInsertWriteId>(std::max(lastInsertWriteId, GetMaxInsertWriteId(portions)))));
     FillOperationPortionIds(operations, portions);
     AddTasks<TSaveOperations>(tasks, operations);
+    AddPortionsToStats(portions, *dataStats);
+    tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(std::make_shared<TTruncateEssentialStats>()));
+    tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(std::make_shared<TRecalculateEssentials>(dataStats)));
     return tasks;
 }
 

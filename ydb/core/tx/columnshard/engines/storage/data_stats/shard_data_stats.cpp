@@ -174,15 +174,20 @@ void TShardDataStats::RecalculateEssentials(NOlap::IDbWrapper& db) {
             }
         }
     }
-    const auto rewrite = [&](const TInternalPathId pathId, const TString& storageId, const TEssentialStats& persisted,
-                             const TEssentialStats& stats) {
-        YDB_LOG_NOTICE_COMP(NKikimrServices::TX_COLUMNSHARD, "",
+    const auto reconcile = [&](const TInternalPathId pathId, const TString& storageId, const TEssentialStats& persisted,
+                               const TEssentialStats& stats) {
+        // a missing row is not drift: shards written before the essentials and the normalizer's truncation have none
+        const bool drifted = !persisted.IsEmpty() && persisted != stats;
+        YDB_LOG_COMP(drifted ? PRI_WARN : PRI_DEBUG, NKikimrServices::TX_COLUMNSHARD, "",
             {"event", "essential_stats_recalculated"},
             {"pathId", pathId},
             {"storageId", storageId},
             {"persisted", persisted.DebugString()},
             {"recounted", stats.DebugString()},
             {"tabletId", TabletId});
+        if (persisted == stats) {
+            return;
+        }
         if (stats.IsEmpty()) {
             db.EraseEssentialStats(pathId, storageId);
         } else {
@@ -193,16 +198,13 @@ void TShardDataStats::RecalculateEssentials(NOlap::IDbWrapper& db) {
         const auto recountedStorages = recounted.find(pathId);
         for (const auto& [storageId, persisted] : storages) {
             if (recountedStorages == recounted.end() || !recountedStorages->second.contains(storageId)) {
-                rewrite(pathId, storageId, persisted, {});
+                reconcile(pathId, storageId, persisted, {});
             }
         }
     }
     for (const auto& [pathId, storages] : recounted) {
         for (const auto& [storageId, stats] : storages) {
-            const TEssentialStats& persisted = GetEssentials(pathId, storageId);
-            if (persisted != stats) {
-                rewrite(pathId, storageId, persisted, stats);
-            }
+            reconcile(pathId, storageId, GetEssentials(pathId, storageId), stats);
         }
     }
     Essentials = std::move(recounted);
