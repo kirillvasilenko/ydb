@@ -119,8 +119,7 @@ void TWriteOperation::FromProto(const NKikimrTxColumnShard::TInternalOperationDa
         InsertWriteIds.push_back(TInsertWriteId(writeId));
     }
     PortionIds.assign(proto.GetPortionIds().begin(), proto.GetPortionIds().end());
-    // TODO: drop empty() once the normalizer (C10) fills the portion ids of older operations
-    YDB_LOG_VERIFY(PortionIds.empty() || PortionIds.size() == InsertWriteIds.size(),
+    YDB_LOG_VERIFY(PortionIds.size() == InsertWriteIds.size(),
         {"insertWriteIds", InsertWriteIds.size()},
         {"portionIds", PortionIds.size()});
     PathId.InternalPathId = TInternalPathId::FromProto(proto);

@@ -14,8 +14,10 @@ bool TGranuleOnlyPortionsReader::DoExecute(NTabletFlatExecutor::TTransactionCont
     if (!db.LoadPortions([&](std::unique_ptr<TPortionInfoConstructor>&& portion, const NKikimrTxColumnShard::TIndexPortionMeta& metaProto) {
             if (portion->GetType() == EPortionType::Written) {
                 const auto& written = static_cast<const TWrittenPortionInfoConstructor&>(*portion);
-                // the uncommitted_portions stage has already loaded them from the operations
-                if (!written.HasCommitSnapshot() && Self->HasInsertedPortion(written.GetPortionIdVerified())) {
+                if (!written.HasCommitSnapshot()) {
+                    // the uncommitted_portions stage has already loaded them from the operations
+                    YDB_LOG_VERIFY(Self->HasInsertedPortion(written.GetPortionIdVerified()),
+                        {"portionId", written.GetPortionIdVerified()});
                     return true;
                 }
             }

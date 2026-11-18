@@ -108,7 +108,6 @@ bool TOperationsManager::Load(NTabletFlatExecutor::TTransactionContext& txc) {
 std::vector<NOlap::TPortionAddress> TOperationsManager::GetUncommittedPortionAddresses() const {
     std::vector<NOlap::TPortionAddress> result;
     for (const auto& [_, operation] : Operations) {
-        // TODO: verify the ids are there once the normalizer (C10) fills them for older operations
         for (const ui64 portionId : operation->GetPortionIds()) {
             result.emplace_back(operation->GetPathId().InternalPathId, portionId);
         }

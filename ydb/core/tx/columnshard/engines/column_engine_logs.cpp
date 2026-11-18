@@ -445,9 +445,6 @@ bool TColumnEngineForLogs::FinishLoading(const bool portionsLoaded) {
 
 void TColumnEngineForLogs::AddPortionLoadedOnStart(TGranuleMeta& granule, const TPortionInfo::TPtr& portion) {
     granule.UpsertPortionOnLoad(portion);
-    if (portion->GetPortionType() == EPortionType::Written) {
-        LastInsertWriteId = std::max(LastInsertWriteId, (ui64) static_cast<const TWrittenPortionInfo&>(*portion).GetInsertWriteId());
-    }
     if (portion->IsCommitted()) {
         RegisterPortion(portion);
     }
