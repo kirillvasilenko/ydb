@@ -10,9 +10,23 @@
 
 namespace NKikimr::NColumnShard {
 
+namespace {
+
+// local-db orders Decimal numerically and columnshard by bytes, so with a Decimal key the index is not in the order of the keys
+bool IsIndexInKeyOrder(const NOlap::TColumnEngineForLogs& engine) {
+    // TODO: allow Decimal once the tablet's numeric Decimal comparison mode (#56893) is on
+    const auto& keyColumns = engine.GetVersionedIndex().GetLastSchema()->GetIndexInfo().GetPrimaryKeyColumns();
+    return std::none_of(keyColumns.begin(), keyColumns.end(), [](const NOlap::TNameTypeInfo& column) {
+        return column.second.GetTypeId() == NScheme::NTypeIds::Decimal;
+    });
+}
+
+}   // namespace
+
 bool TDeferredPortionLoader::DecideOnStart() {
-    Enabled = HasAppData() && AppDataVerified().ColumnShardConfig.GetDeferredPortionLoadingSettings().GetEnabled();
-    for (const auto& [_, granule] : TablesManager.GetPrimaryIndexAsVerified<NOlap::TColumnEngineForLogs>().GetTables()) {
+    const auto& engine = TablesManager.GetPrimaryIndexAsVerified<NOlap::TColumnEngineForLogs>();
+    Enabled = HasAppData() && AppDataVerified().ColumnShardConfig.GetDeferredPortionLoadingSettings().GetEnabled() && IsIndexInKeyOrder(engine);
+    for (const auto& [_, granule] : engine.GetTables()) {
         // in_mem reads the column chunks at the start, so it needs all the portions loaded right away
         Enabled &= !granule->LoadsChunksAtStart();
     }

@@ -405,6 +405,11 @@ TCell MakeTestCell(const TTypeInfo& typeInfo, ui32 value, std::vector<TString>& 
         return TCell::Make<float>(value);
     } else if (type == NTypeIds::Double) {
         return TCell::Make<double>(value);
+    } else if (type == NTypeIds::Decimal) {
+        const std::pair<ui64, i64> decimal(value, 0);
+        mem.push_back(TString(reinterpret_cast<const char*>(&decimal), sizeof(decimal)));
+        const TString& str = mem.back();
+        return TCell(str.data(), str.size());
     }
 
     UNIT_ASSERT(false);

@@ -42,7 +42,18 @@ struct TShardOptions {
     TString CompactionPreset = "tiling++";
     TString TilingJson;
     bool DeferredLoading = true;
+    bool DecimalKey = false;
 };
+
+TestTableDescription MakeTable(const TShardOptions& shardOptions) {
+    TestTableDescription table;
+    if (shardOptions.DecimalKey) {
+        const NArrow::NTest::TTestColumn column("decimal", NScheme::TTypeInfo(NScheme::TDecimalType::Default()));
+        table.Schema.push_back(column);
+        table.Pk.push_back(column);
+    }
+    return table;
+}
 
 // Every table gets three committed portions, one per write: rows 0..99, 200..299, 400..499; batches of one portion each after a reboot,
 // the newest first: after one batch the keys from 499 are loaded, after two from 299, after three everything
@@ -56,7 +67,9 @@ public:
     ui64 TxId = 100;
     const TestTableDescription Table;
 
-    explicit TShardWithPortions(const TShardOptions& shardOptions = {}) {
+    explicit TShardWithPortions(const TShardOptions& shardOptions = {})
+        : Table(MakeTable(shardOptions))
+    {
         Controller->DisableBackground(NKikimr::NYDBTest::ICSController::EBackground::Compaction);
         TTester::Setup(Runtime);
         Runtime.GetAppData().ColumnShardConfig.SetDefaultCompactionPreset(shardOptions.CompactionPreset);
@@ -402,6 +415,16 @@ Y_UNIT_TEST_SUITE(TColumnShardDeferredPortionLoading) {
     // the batches are held, so the scan answers only if TTxInit loaded every portion
     Y_UNIT_TEST(InMemMetadataLoadsEverythingAtStart) {
         TShardWithPortions shard({ .InMemMetadata = true });
+        shard.AllowBatches(0);
+        shard.Reboot();
+        auto reader = shard.StartScan({ 0, 499 });
+        UNIT_ASSERT(reader->WaitScannerAnswer());
+        UNIT_ASSERT_VALUES_EQUAL(shard.ReadRows(*reader), 300);
+        UNIT_ASSERT_VALUES_EQUAL(shard.Controller->GetPortionBatchesLoaded(), 0);
+    }
+
+    Y_UNIT_TEST(DecimalKeyLoadsEverythingAtStart) {
+        TShardWithPortions shard({ .DecimalKey = true });
         shard.AllowBatches(0);
         shard.Reboot();
         auto reader = shard.StartScan({ 0, 499 });
