@@ -22,12 +22,12 @@ struct TOperationRow {
     NKikimrTxColumnShard::TInternalOperationData Metadata;
 };
 
-class TEmptyIndexTable: public INormalizerChanges {
+class TResetIndexTable: public INormalizerChanges {
 private:
     const std::vector<TNameTypeInfo> PkColumns;
 
 public:
-    TEmptyIndexTable(const std::vector<TNameTypeInfo>& pkColumns)
+    TResetIndexTable(const std::vector<TNameTypeInfo>& pkColumns)
         : PkColumns(pkColumns)
     {
     }
@@ -126,12 +126,12 @@ public:
     }
 };
 
-class TRecalculateEssentials: public INormalizerChanges {
+class TRecalculateEssentialStats: public INormalizerChanges {
 private:
     const std::shared_ptr<NColumnShard::TShardDataStats> DataStats;
 
 public:
-    TRecalculateEssentials(const std::shared_ptr<NColumnShard::TShardDataStats>& dataStats)
+    TRecalculateEssentialStats(const std::shared_ptr<NColumnShard::TShardDataStats>& dataStats)
         : DataStats(dataStats)
     {
     }
@@ -159,7 +159,7 @@ void AddTasks(std::vector<INormalizerTask::TPtr>& tasks, const std::vector<TRow>
 std::vector<INormalizerTask::TPtr> BuildIndexTableTasks(
     const std::vector<TNameTypeInfo>& pkColumns, const std::vector<TPortionInfo::TPtr>& portions) {
     std::vector<INormalizerTask::TPtr> tasks;
-    tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(std::make_shared<TEmptyIndexTable>(pkColumns)));
+    tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(std::make_shared<TResetIndexTable>(pkColumns)));
     AddTasks<TFillIndexTable>(tasks, portions);
     return tasks;
 }
@@ -183,13 +183,16 @@ bool LoadLastInsertWriteId(NTabletFlatExecutor::TTransactionContext& txc, ui64& 
 }
 
 void FillOperationPortionIds(std::vector<TOperationRow>& operations, const std::vector<TPortionInfo::TPtr>& portions) {
-    // insert write ids were unique only within a table before C5
+    // older binaries made insert write ids unique only within a table
     THashMap<std::pair<ui64, ui64>, ui64> uncommittedPortionIds;
     for (const auto& portion : portions) {
         if (portion->GetPortionType() == EPortionType::Written && !portion->IsCommitted()) {
             const auto& written = static_cast<const TWrittenPortionInfo&>(*portion);
-            uncommittedPortionIds.emplace(
-                std::make_pair(written.GetPathId().GetRawValue(), (ui64)written.GetInsertWriteId()), written.GetPortionId());
+            const ui64 pathId = written.GetPathId().GetRawValue();
+            const ui64 insertWriteId = written.GetInsertWriteId();
+            YDB_LOG_VERIFY(uncommittedPortionIds.emplace(std::make_pair(pathId, insertWriteId), written.GetPortionId()).second,
+                {"pathId", pathId},
+                {"insertWriteId", insertWriteId});
         }
     }
     for (auto& operation : operations) {
@@ -286,7 +289,7 @@ TConclusion<std::vector<INormalizerTask::TPtr>> TNormalizer::DoInit(
     AddTasks<TSaveOperations>(tasks, operations);
     AddPortionsToStats(portions, *dataStats);
     tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(std::make_shared<TTruncateEssentialStats>()));
-    tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(std::make_shared<TRecalculateEssentials>(dataStats)));
+    tasks.emplace_back(std::make_shared<TTrivialNormalizerTask>(std::make_shared<TRecalculateEssentialStats>(dataStats)));
     return tasks;
 }
 

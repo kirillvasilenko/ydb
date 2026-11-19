@@ -39,7 +39,7 @@ public:
     }
 };
 
-// what a shard written before C10 looks like
+// what a shard written before the essential stats were persisted looks like
 class TEraseEssentialStats: public NYDBTest::ILocalDBModifier {
 public:
     void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {
@@ -70,7 +70,7 @@ public:
     }
 };
 
-// what an operation written before C5 looks like
+// what an operation written before it kept its portion ids looks like
 class TClearOperationPortionIds: public NYDBTest::ILocalDBModifier {
 public:
     void Apply(NTabletFlatExecutor::TTransactionContext& txc) const override {

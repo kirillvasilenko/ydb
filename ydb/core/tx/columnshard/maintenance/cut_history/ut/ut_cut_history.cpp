@@ -430,6 +430,19 @@ public:
         WakeupAndDispatch();
     }
 
+    void PrepareDeferredLoading() {
+        Schema();
+        Controller->DisableBackground(EBackground::Compaction);
+        Write(1, 0, 1000);
+        Restart(NewGroup);
+        WakeupAndDispatch();
+        Runtime.GetAppData().ColumnShardConfig.MutableDeferredPortionLoadingSettings()->SetEnabled(true);
+    }
+
+    bool AreAllPortionsLoaded() {
+        return Controller->GetTheOnlyShard()->GetIndexAs<NOlap::TColumnEngineForLogs>().AreAllPortionsLoaded(std::nullopt);
+    }
+
     void PrepareColdCachePortions(ui32 portionCount = 3) {
         auto* config = Runtime.GetAppData().ColumnShardConfig.MutableCutHistory();
         config->SetScanBatchSize(2);
@@ -751,6 +764,28 @@ Y_UNIT_TEST_SUITE(TColumnShardCutHistory) {
         TFixture f;
         f.PrepareUncommittedPortions();
         f.Start();
+        f.WaitForCutHistory();
+        UNIT_ASSERT(f.Journal().empty());
+        UNIT_ASSERT(!f.GetLiveOldBlobs().empty());
+    }
+
+    // a portion not loaded yet must keep its history, so the search waits for every portion
+    Y_UNIT_TEST(FirstGCBeforeAllPortionsLoaded) {
+        TFixture f;
+        f.PrepareDeferredLoading();
+        f.Controller->DisableBackground(EBackground::PortionLoading);
+        bool firstGCCompleted = false;
+        auto gcObserver = f.Runtime.AddObserver<TEvPrivate::TEvGarbageCollectionFinished>([&](auto&) {
+            firstGCCompleted = true;
+        });
+        const ui64 scans = f.Samples("Scan");
+        f.Start();
+        f.WaitFor([&] {
+            return firstGCCompleted;
+        });
+        UNIT_ASSERT(!f.AreAllPortionsLoaded());
+        UNIT_ASSERT_VALUES_EQUAL(f.Samples("Scan"), scans);
+        f.Controller->EnableBackground(EBackground::PortionLoading);
         f.WaitForCutHistory();
         UNIT_ASSERT(f.Journal().empty());
         UNIT_ASSERT(!f.GetLiveOldBlobs().empty());

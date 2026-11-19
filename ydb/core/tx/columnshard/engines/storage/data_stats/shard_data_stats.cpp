@@ -49,7 +49,7 @@ TShardDataStats::TShardDataStats(const std::shared_ptr<NOlap::IStoragesManager>&
 }
 
 TShardDataStats::~TShardDataStats() {
-    AllShardsPortionsMetadataRamBytes.Sub(PortionsMetadataRamBytes);
+    Counters.OnIndexMetadataUsageBytes(AllShardsPortionsMetadataRamBytes.Sub(PortionsMetadataRamBytes));
 }
 
 void TShardDataStats::AddToGroup(const NOlap::TPortionInfo& portion, const EPortionGroup group) {

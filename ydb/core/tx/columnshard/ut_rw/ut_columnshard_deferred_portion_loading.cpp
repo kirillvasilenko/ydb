@@ -122,8 +122,7 @@ public:
         RebootTablet(Runtime, TTestTxConfig::TxTablet0, Sender);
     }
 
-    // a binary that counted wrong: no row for the table, a row for a table without portions; written into the running shard,
-    // since with a modifier every normalizer runs and fixes the rows before the recount
+    // written into the running shard: with a modifier every normalizer runs and fixes the rows before the recount
     void WriteWrongEssentialStats() {
         const TString& storageId = NOlap::NBlobOperations::TGlobal::DefaultStorageId;
         EraseLocalDbTableRow(
