@@ -189,7 +189,7 @@ void FillOperationPortionIds(std::vector<TOperationRow>& operations, const std::
         if (portion->GetPortionType() == EPortionType::Written && !portion->IsCommitted()) {
             const auto& written = static_cast<const TWrittenPortionInfo&>(*portion);
             const ui64 pathId = written.GetPathId().GetRawValue();
-            const ui64 insertWriteId = written.GetInsertWriteId();
+            const ui64 insertWriteId = (ui64)written.GetInsertWriteId();
             YDB_LOG_VERIFY(uncommittedPortionIds.emplace(std::make_pair(pathId, insertWriteId), written.GetPortionId()).second,
                 {"pathId", pathId},
                 {"insertWriteId", insertWriteId});

@@ -205,6 +205,9 @@ protected:
         DoModifyPortions(add, {});
     }
 
+    virtual void DoOnAllPortionsLoadedInBatches() {
+    }
+
     virtual std::vector<std::shared_ptr<TColumnEngineChanges>> DoGetOptimizationTasks(
         std::shared_ptr<TGranuleMeta> granule, const std::shared_ptr<NDataLocks::TManager>& dataLocksManager) const = 0;
     virtual std::shared_ptr<TColumnEngineChanges> DoGetNextOptimizationTask(
@@ -387,6 +390,11 @@ public:
             {"pathId", PathId});
         UpdatePortionsCount(add.size(), 0);
         DoAddLoadedPortions(add);
+    }
+
+    // the table's portions came in several AddLoadedPortions, the last one just now
+    void OnAllPortionsLoadedInBatches() {
+        DoOnAllPortionsLoadedInBatches();
     }
 
     std::vector<std::shared_ptr<TColumnEngineChanges>> GetOptimizationTasks(

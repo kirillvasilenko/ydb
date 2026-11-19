@@ -51,6 +51,10 @@ public:
         return Coverage == ECoverage::All;
     }
 
+    bool CoversNothing() const {
+        return Coverage == ECoverage::None;
+    }
+
     // Whether every row the ranges select lies in a portion that is in memory.
     bool Covers(const TPKRangesFilter& ranges) const;
 
