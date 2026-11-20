@@ -94,6 +94,8 @@ void TIndexPortionsByLastKey::Truncate(NTable::TDatabase& db) {
 
 void TIndexPortionsByLastKey::Upsert(NTable::TDatabase& db, const TPortionInfo& portion) {
     const auto* info = GetTableInfo(db);
+    // repair normalizers write portions before PrepareDeferredPortionLoading builds the table
+    // so we can't just crash here on verify if there is no table
     if (!info) {
         return;
     }
@@ -104,6 +106,8 @@ void TIndexPortionsByLastKey::Upsert(NTable::TDatabase& db, const TPortionInfo& 
 
 void TIndexPortionsByLastKey::Erase(NTable::TDatabase& db, const TPortionInfo& portion) {
     const auto* info = GetTableInfo(db);
+    // repair normalizers write portions before PrepareDeferredPortionLoading builds the table
+    // so we can't just crash here on verify if there is no table
     if (!info) {
         return;
     }
