@@ -866,7 +866,7 @@ public:
         ui64 size = 0;
         for (auto&& i : portions) {
             size += i->GetTotalBlobBytes();
-            if (locksManager->IsLocked(*i, NDataLocks::ELockCategory::Compaction)) {
+            if (!IOptimizerPlanner::CanCompactPortion(*granule, *i, locksManager)) {
                 YDB_LOG_DEBUG_COMP(NKikimrServices::TX_COLUMNSHARD, "",
                     {"info", Others.DebugString()},
                     {"event", "skip_optimization"},

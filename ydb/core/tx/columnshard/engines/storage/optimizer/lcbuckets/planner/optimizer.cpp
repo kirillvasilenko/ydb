@@ -33,7 +33,7 @@ std::vector<std::shared_ptr<TColumnEngineChanges>> TOptimizerPlanner::DoGetOptim
     std::vector<std::shared_ptr<TColumnEngineChanges>> results;
     bool hasOneLayer = false;
     const auto mayUsePortion = [&](const TPortionInfo::TConstPtr& p) {
-        return !locksManager->IsLocked(p, NDataLocks::ELockCategory::Compaction);
+        return CanCompactPortion(*granule, *p, locksManager);
     };
     for (const auto& [weight, level] : LevelsByWeight) {
         if (weight == 0) {
