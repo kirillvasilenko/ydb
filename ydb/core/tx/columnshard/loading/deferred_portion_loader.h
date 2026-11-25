@@ -2,7 +2,10 @@
 #include <ydb/core/scheme/scheme_tablecell.h>
 #include <ydb/core/tablet_flat/tablet_flat_executor.h>
 #include <ydb/core/tx/columnshard/common/path_id.h>
+#include <ydb/core/tx/columnshard/data_locks/manager/manager.h>
 #include <ydb/core/tx/columnshard/engines/portions/portion_info.h>
+
+#include <util/generic/noncopyable.h>
 
 #include <deque>
 #include <optional>
@@ -17,7 +20,7 @@ namespace NKikimr::NColumnShard {
 class TTablesManager;
 
 // DeferredPortionLoadingSettings.Enabled: TTxInit leaves the portions on disk, they are loaded in batches after the start
-class TDeferredPortionLoader {
+class TDeferredPortionLoader: private TNonCopyable {
 public:
     struct TBatch {
         TInternalPathId PathId;
@@ -28,6 +31,8 @@ public:
 
 private:
     TTablesManager& TablesManager;
+    NOlap::NDataLocks::TManager& DataLocksManager;
+    std::shared_ptr<NOlap::NDataLocks::TManager::TGuard> CompactionLock;
     bool Enabled = false;
     bool BatchInFlight = false;
     ui32 BatchesLoaded = 0;
@@ -36,14 +41,19 @@ private:
     // absent: the next batch of the table starts from the top
     THashMap<TInternalPathId, TOwnedCellVec> NextBatchBelow;
 
+    void ReleaseCompactionLock();
+
 public:
-    explicit TDeferredPortionLoader(TTablesManager& tablesManager)
+    TDeferredPortionLoader(TTablesManager& tablesManager, NOlap::NDataLocks::TManager& dataLocksManager)
         : TablesManager(tablesManager)
+        , DataLocksManager(dataLocksManager)
     {
     }
 
+    ~TDeferredPortionLoader();
+
     // TTxInit, before the engine builds its loader; false: the engine loads every portion in TTxInit
-    bool DecideOnStart();
+    bool EnableIfSupported();
 
     bool IsEnabled() const {
         return Enabled;

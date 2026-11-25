@@ -11,6 +11,8 @@
 #include <ydb/core/tx/data_events/payload_helper.h>
 #include <ydb/core/tx/long_tx_service/public/events.h>
 
+#include <functional>
+
 namespace NKikimr {
 
 using namespace NColumnShard;
@@ -21,6 +23,14 @@ namespace {
 class TDefaultTestsController: public NKikimr::NYDBTest::NColumnShard::TController {
 public:
     NYDBTest::ILocalDBModifier::TPtr LocalDBModifier;
+    std::function<void(const TColumnShard&)> OnTabletInit;
+
+    void DoOnTabletInitCompleted(const TColumnShard& shard) override {
+        TController::DoOnTabletInitCompleted(shard);
+        if (OnTabletInit) {
+            OnTabletInit(shard);
+        }
+    }
 
     NYDBTest::ILocalDBModifier::TPtr BuildLocalBaseModifier() const override {
         return LocalDBModifier;
@@ -116,9 +126,11 @@ public:
         Y_UNUSED(SetupSchema(Runtime, Sender, tx.SerializeAsString(), 10));
     }
 
-    void WriteAndCommit(const ui64 tableId, const std::pair<ui64, ui64> rows) {
+    void WriteAndCommit(const ui64 tableId, const std::pair<ui64, ui64> rows,
+        const NEvWrite::EModificationType modificationType = NEvWrite::EModificationType::Upsert) {
         std::vector<ui64> writeIds;
-        UNIT_ASSERT(WriteData(Runtime, Sender, TxId, tableId, MakeTestBlob(rows, Table.Schema), Table.Schema, true, &writeIds));
+        UNIT_ASSERT(
+            WriteData(Runtime, Sender, TxId, tableId, MakeTestBlob(rows, Table.Schema), Table.Schema, true, &writeIds, modificationType));
         const TPlanStep planStep = ProposeCommit(Runtime, Sender, TxId, writeIds);
         PlanCommit(Runtime, Sender, planStep, TxId);
         Snapshot = NOlap::TSnapshot(planStep, Max<ui64>());
@@ -628,6 +640,82 @@ Y_UNIT_TEST_SUITE(TColumnShardDeferredPortionLoading) {
         ForwardToTablet(shard.Runtime, TTestTxConfig::TxTablet0, shard.Sender, new TEvents::TEvWakeup(1));
         UNIT_ASSERT_VALUES_EQUAL(shard.WaitWriteStatus(), (ui32)NKikimrDataEvents::TEvWriteResult::STATUS_COMPLETED);
         UNIT_ASSERT_VALUES_EQUAL(shard.Controller->GetPortionBatchesLoaded(), 1);
+    }
+
+    Y_UNIT_TEST(CompactionSkipsDeletesOutsideTheLoadedRange) {
+        TShardWithPortions shard;
+        shard.WriteAndCommit(TableId, { 50, 450 }, NEvWrite::EModificationType::Delete);
+        shard.AllowBatches(2);
+        shard.Reboot();
+        shard.WaitBatchesLoaded(2);
+
+        const auto granule = shard.Engine().GetTables().begin()->second;
+        const auto& portions = granule->GetPortions();
+        UNIT_ASSERT_VALUES_EQUAL(portions.size(), 2);
+        const auto it = std::find_if(portions.begin(), portions.end(), [](const auto& entry) {
+            return entry.second->GetMeta().GetDeletionsCount() != 0;
+        });
+        UNIT_ASSERT(it != portions.end());
+        const auto wideDelete = it->second;
+        UNIT_ASSERT(!granule->GetNextOptimizationTask(granule, shard.Controller->GetTheOnlyShard()->GetDataLocksManager()));
+
+        // With loading held at 449, only the 400..499 upsert and the 470..479 delete can compact.
+        shard.WriteAndCommit(TableId, { 470, 480 }, NEvWrite::EModificationType::Delete);
+        shard.Controller->EnableBackground(NKikimr::NYDBTest::ICSController::EBackground::Compaction);
+        shard.SendPeriodicWakeup();
+        shard.Runtime.WaitFor("covered delete compacted", [&] {
+            return shard.Controller->GetCompactionFinishedCounter().Val() > 0;
+        }, TDuration::Seconds(60));
+        UNIT_ASSERT_VALUES_EQUAL(shard.Controller->GetPortionBatchesLoaded(), 2);
+        UNIT_ASSERT(!wideDelete->HasRemoveSnapshot());
+
+        shard.AllowBatches(std::nullopt);
+        shard.WaitBatchesLoaded(4);
+        shard.SendPeriodicWakeup();
+        shard.Runtime.WaitFor("wide delete compacted", [&] {
+            return wideDelete->HasRemoveSnapshot();
+        }, TDuration::Seconds(60));
+
+        // Read at a snapshot after compaction.
+        shard.WriteAndCommit(TableId, { 600, 601 });
+        auto reader = shard.StartScan({ 0, 499 });
+        UNIT_ASSERT(reader->WaitScannerAnswer());
+        UNIT_ASSERT_VALUES_EQUAL(shard.ReadRows(*reader), 90);
+    }
+
+    Y_UNIT_TEST(DeleteCommittedDuringLoadingStaysLockedUntilItsKeyIsLoaded) {
+        using NOlap::NDataLocks::ELockCategory;
+        NOlap::TPortionInfo::TConstPtr deletePortion;
+        TShardWithPortions shard;
+        std::vector<ui64> writeIds;
+        const ui64 txId = shard.TxId++;
+        UNIT_ASSERT(WriteData(shard.Runtime, shard.Sender, txId, TableId, MakeTestBlob({ 400, 401 }, shard.Table.Schema), shard.Table.Schema,
+            true, &writeIds, NEvWrite::EModificationType::Delete));
+        const auto step = ProposeCommit(shard.Runtime, shard.Sender, txId, writeIds);
+
+        shard.Controller->OnTabletInit = [&](const TColumnShard& rebootedShard) {
+            const auto& inserted = rebootedShard.GetIndexAs<NOlap::TColumnEngineForLogs>().GetTables().begin()->second->GetInsertedPortions();
+            UNIT_ASSERT_VALUES_EQUAL(inserted.size(), 1);
+            deletePortion = inserted.begin()->second;
+            UNIT_ASSERT(rebootedShard.GetDataLocksManager()->IsLocked(*deletePortion, ELockCategory::Compaction));
+        };
+        shard.AllowBatches(1);
+        shard.Reboot();
+        shard.WaitBatchesLoaded(1);
+        UNIT_ASSERT_C(deletePortion, "tablet initialization must check the recovered delete");
+        const auto granule = shard.Engine().GetTables().begin()->second;
+        PlanCommit(shard.Runtime, shard.Sender, step, txId);
+
+        const auto& locks = shard.Controller->GetTheOnlyShard()->GetDataLocksManager();
+        UNIT_ASSERT(locks->IsLocked(*deletePortion, ELockCategory::Compaction));
+        UNIT_ASSERT(!locks->IsLocked(*deletePortion, ELockCategory::Actualization));
+        UNIT_ASSERT(!locks->IsLocked(*granule, ELockCategory::Compaction));
+
+        // Batch two reaches key 400 with the same delete that is already in memory.
+        shard.AllowBatches(2);
+        shard.WaitBatchesLoaded(2);
+        UNIT_ASSERT(!granule->GetLoadedKeyRanges().CoversAll());
+        UNIT_ASSERT(!locks->IsLocked(*deletePortion, ELockCategory::Compaction));
     }
 
     Y_UNIT_TEST(WriteWaitingForLoadedPortionsIsCounted) {

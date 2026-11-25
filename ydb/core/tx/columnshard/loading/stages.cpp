@@ -237,7 +237,7 @@ bool TTablesManagerInitializer::DoExecute(NTabletFlatExecutor::TTransactionConte
 
 std::shared_ptr<NKikimr::ITxReader> TTablesManagerInitializer::BuildNextReaderAfterLoad() {
     if (Self->TablesManager.HasPrimaryIndex()) {
-        const bool deferPortions = Self->DeferredPortionLoader.DecideOnStart();
+        const bool deferPortions = Self->DeferredPortionLoader.EnableIfSupported();
         return Self->TablesManager.MutablePrimaryIndex().BuildLoader(
             std::make_shared<TBlobGroupSelector>(Self->Info()), Self->GetOperationsManager().GetUncommittedPortionAddresses(), !deferPortions);
     } else {
