@@ -10,24 +10,81 @@
 
 namespace NKikimr::NColumnShard {
 
-bool TDeferredPortionLoader::DecideOnStart() {
+namespace {
+
+using NOlap::NDataLocks::ELockCategory;
+
+class TDeferredLoadingLock final: public NOlap::NDataLocks::ILock {
+private:
+    const NOlap::TColumnEngineForLogs& Engine;
+
+    std::optional<TString> DoIsLocked(const NOlap::TPortionInfo& portion, ELockCategory category, const THashSet<TString>&) const override {
+        if (category == ELockCategory::Compaction && portion.GetMeta().GetDeletionsCount()) {
+            const auto& loaded = Engine.GetGranuleVerified(portion.GetPathId()).GetLoadedKeyRanges();
+            if (!loaded.CoversAll() && !loaded.Covers(portion.IndexKeyStart(), portion.IndexKeyEnd())) {
+                return GetLockName();
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<TString> DoIsLocked(const NOlap::TGranuleMeta&, ELockCategory, const THashSet<TString>&) const override {
+        return std::nullopt;
+    }
+
+    bool DoIsEmpty() const override {
+        return false;
+    }
+
+public:
+    explicit TDeferredLoadingLock(const NOlap::TColumnEngineForLogs& engine)
+        : ILock("DeferredPortionLoading", ELockCategory::Compaction)
+        , Engine(engine)
+    {
+    }
+};
+
+}   // namespace
+
+TDeferredPortionLoader::~TDeferredPortionLoader() {
+    ReleaseCompactionLock();
+}
+
+void TDeferredPortionLoader::ReleaseCompactionLock() {
+    if (CompactionLock) {
+        CompactionLock->Release(DataLocksManager);
+        CompactionLock.reset();
+    }
+}
+
+bool TDeferredPortionLoader::EnableIfSupported() {
     Enabled = HasAppData() && AppDataVerified().ColumnShardConfig.GetDeferredPortionLoadingSettings().GetEnabled();
-    for (const auto& [_, granule] : TablesManager.GetPrimaryIndexAsVerified<NOlap::TColumnEngineForLogs>().GetTables()) {
+    const auto& engine = TablesManager.GetPrimaryIndexAsVerified<NOlap::TColumnEngineForLogs>();
+    for (const auto& [_, granule] : engine.GetTables()) {
         // in_mem reads the column chunks at the start, so it needs all the portions loaded right away
         Enabled &= !granule->LoadsChunksAtStart();
+    }
+    if (Enabled) {
+        CompactionLock = DataLocksManager.RegisterLock<TDeferredLoadingLock>(engine);
     }
     return Enabled;
 }
 
 bool TDeferredPortionLoader::Start() {
     YDB_LOG_VERIFY(Enabled);
+    YDB_LOG_VERIFY(CompactionLock);
     YDB_LOG_VERIFY(TablesToLoad.empty());
-    for (const auto& [pathId, granule] : TablesManager.GetPrimaryIndexAsVerified<NOlap::TColumnEngineForLogs>().GetTables()) {
+    const auto& engine = TablesManager.GetPrimaryIndexAsVerified<NOlap::TColumnEngineForLogs>();
+    for (const auto& [pathId, granule] : engine.GetTables()) {
         if (!granule->GetLoadedKeyRanges().CoversAll()) {
             TablesToLoad.emplace_back(pathId);
         }
     }
-    return !TablesToLoad.empty();
+    if (TablesToLoad.empty()) {
+        ReleaseCompactionLock();
+        return false;
+    }
+    return true;
 }
 
 bool TDeferredPortionLoader::TryStartBatch() {
@@ -96,7 +153,11 @@ bool TDeferredPortionLoader::OnBatchLoaded(TBatch&& batch) {
         NextBatchBelow.insert_or_assign(batch.PathId, std::move(*batch.LastKey));
         TablesToLoad.emplace_back(batch.PathId);
     }
-    return TablesToLoad.empty();
+    if (TablesToLoad.empty()) {
+        ReleaseCompactionLock();
+        return true;
+    }
+    return false;
 }
 
 }   // namespace NKikimr::NColumnShard

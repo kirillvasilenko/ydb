@@ -111,7 +111,7 @@ void TColumnShard::TrySwitchToWork(const TActorContext& ctx) {
 
     NYDBTest::TControllers::GetColumnShardController()->OnSwitchToWork(TabletID());
     ui64 portionsCount = 0;
-    if (TablesManager.HasPrimaryIndex()) {
+    if (!DeferredPortionLoader.IsEnabled() && TablesManager.HasPrimaryIndex()) {
         for (auto&& [_, granule] : TablesManager.GetPrimaryIndexAsVerified<NOlap::TColumnEngineForLogs>().GetTables()) {
             portionsCount += granule->GetPortions().size();
         }
