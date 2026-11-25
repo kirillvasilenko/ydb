@@ -245,13 +245,13 @@ struct TAccumulator {
         return p;
     }
 
-    std::vector<TPortionInfo::TConstPtr> StartCompaction(
-        const TSettings& settings, const TGranuleMeta& granule, const std::shared_ptr<NDataLocks::TManager>& locksManager) {
+    std::vector<TPortionInfo::TConstPtr> StartCompaction(const TSettings& settings, const std::shared_ptr<NDataLocks::TManager>& locksManager) {
         std::vector<TPortionInfo::TConstPtr> portions;
         ui64 totalBytes = 0;
         auto it = Portions.begin();
         while (it != Portions.end()) {
-            if (!IOptimizerPlanner::CanCompactPortion(granule, *it->second, locksManager)) {
+            if (locksManager->IsLocked(*it->second, NDataLocks::ELockCategory::Compaction)) {
+                // Skip locked portions
                 ++it;
                 continue;
             }
@@ -414,8 +414,7 @@ struct TLevel {
         return nullptr;
     }
 
-    std::vector<TPortionInfo::TConstPtr> StartCompaction(
-        const TSettings& settings, const TGranuleMeta& granule, const std::shared_ptr<NDataLocks::TManager>& locksManager) {
+    std::vector<TPortionInfo::TConstPtr> StartCompaction(const TSettings& settings, const std::shared_ptr<NDataLocks::TManager>& locksManager) {
         std::vector<TPortionInfo::TConstPtr> portions;
         if (auto range = Intersections.GetMaxRange()) {
             bool fullCompaction =
@@ -443,9 +442,9 @@ struct TLevel {
                     continue;   // shouldn't happen
                 }
                 const auto& p = it->second;
-                if (!IOptimizerPlanner::CanCompactPortion(granule, *p, locksManager)) {
+                if (locksManager->IsLocked(*p, NDataLocks::ELockCategory::Compaction)) {
                     YDB_LOG_DEBUG("",
-                        {"message", "tiling compaction: skipping level (portion blocked)"},
+                        {"message", "tiling compaction: skipping level (portions locked)"},
                         {"level", Level});
                     CheckCompactions = false;
                     return {};
@@ -479,7 +478,7 @@ struct TLevel {
                 TPortionInfo::TPtr bestLeft, bestRight;
                 if (auto minFound = Next->Intersections.FindRange(*minKey); minFound && minFound.GetCount() > 0) {
                     minFound.ForEachValue([&](ui64 id) {
-                        if (auto p = Next->FindPortion(id); p && IOptimizerPlanner::CanCompactPortion(granule, *p, locksManager)) {
+                        if (auto p = Next->FindPortion(id); p && !locksManager->IsLocked(*p, NDataLocks::ELockCategory::Compaction)) {
                             // The best portion doesn't extend our compaction range by much
                             if (p->IndexKeyStart() < *minKey && p->IndexKeyEnd() < *maxKey &&
                                 (!bestLeft || bestLeft->IndexKeyStart() < p->IndexKeyStart())) {
@@ -491,7 +490,7 @@ struct TLevel {
                 }
                 if (auto maxFound = Next->Intersections.FindRange(*maxKey); maxFound && maxFound.GetCount() > 0) {
                     maxFound.ForEachValue([&](ui64 id) {
-                        if (auto p = Next->FindPortion(id); p && IOptimizerPlanner::CanCompactPortion(granule, *p, locksManager)) {
+                        if (auto p = Next->FindPortion(id); p && !locksManager->IsLocked(*p, NDataLocks::ELockCategory::Compaction)) {
                             // The best portion doesn't extend our compaction range by much
                             if (*minKey < p->IndexKeyStart() && *maxKey < p->IndexKeyEnd() &&
                                 (!bestRight || bestRight->IndexKeyEnd() > p->IndexKeyEnd())) {
@@ -696,7 +695,7 @@ private:
             return nullptr;
         }
 
-        std::vector<TPortionInfo::TConstPtr> portions = Levels[level].StartCompaction(*this, *granule, locksManager);
+        std::vector<TPortionInfo::TConstPtr> portions = Levels[level].StartCompaction(*this, locksManager);
         if (portions.empty()) {
             return nullptr;
         }
@@ -736,7 +735,7 @@ private:
             return nullptr;
         }
 
-        std::vector<TPortionInfo::TConstPtr> portions = Accumulator[level].StartCompaction(*this, *granule, locksManager);
+        std::vector<TPortionInfo::TConstPtr> portions = Accumulator[level].StartCompaction(*this, locksManager);
         if (portions.empty()) {
             return nullptr;
         }

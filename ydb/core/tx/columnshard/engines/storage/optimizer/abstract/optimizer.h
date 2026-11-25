@@ -248,9 +248,6 @@ protected:
     }
 
 public:
-    static bool CanCompactPortion(
-        const TGranuleMeta& granule, const TPortionInfo& portion, const std::shared_ptr<NDataLocks::TManager>& locksManager);
-
     static ui64 GetNodePortionsConsumption() {
         return NodePortionsCounter.Val() * NKikimr::NOlap::TGlobalLimits::AveragePortionSizeLimit;
     }

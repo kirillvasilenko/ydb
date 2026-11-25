@@ -2,24 +2,12 @@
 #include "optimizer.h"
 
 #include <ydb/core/protos/config.pb.h>
-#include <ydb/core/tx/columnshard/data_locks/manager/manager.h>
 #include <ydb/core/tx/columnshard/engines/changes/abstract/abstract.h>
 #include <ydb/core/tx/columnshard/engines/portions/portion_info.h>
-#include <ydb/core/tx/columnshard/engines/storage/granule/granule.h>
 
 #include <ydb/library/actors/struct_log/log_stack.h>
 
 namespace NKikimr::NOlap::NStorageOptimizer {
-
-bool IOptimizerPlanner::CanCompactPortion(
-    const TGranuleMeta& granule, const TPortionInfo& portion, const std::shared_ptr<NDataLocks::TManager>& locksManager) {
-    const auto& loadedKeys = granule.GetLoadedKeyRanges();
-    // A merge may discard a delete marker for a row in a portion still waiting to load.
-    if (!loadedKeys.CoversAll() && portion.GetMeta().GetDeletionsCount() && !loadedKeys.Covers(portion.IndexKeyStart(), portion.IndexKeyEnd())) {
-        return false;
-    }
-    return !locksManager || !locksManager->IsLocked(portion, NDataLocks::ELockCategory::Compaction);
-}
 
 std::vector<std::shared_ptr<TColumnEngineChanges>> IOptimizerPlanner::GetOptimizationTasks(
     std::shared_ptr<TGranuleMeta> granule, const std::shared_ptr<NDataLocks::TManager>& dataLocksManager) const {
