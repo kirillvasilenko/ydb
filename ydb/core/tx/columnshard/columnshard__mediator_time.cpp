@@ -75,13 +75,13 @@ void TColumnShard::Handle(TEvMediatorTimecast::TEvSubscribeReadStepResult::TPtr&
 }
 
 void TColumnShard::OnMediatorTimeReady() {
+    EnqueueBackgroundActivities();
+    BackgroundSessionsManager->Start();
+
     // dispatched here, not re-sent, so that events already in the mailbox cannot overtake them
     for (TAutoPtr<IEventHandle>& ev : MediatorTime.ExtractHeldEvents()) {
         StateWork(ev);
     }
-
-    EnqueueBackgroundActivities();
-    BackgroundSessionsManager->Start();
 }
 
 void TColumnShard::WaitPlanStep(ui64 step) {
